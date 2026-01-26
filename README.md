@@ -1,5 +1,7 @@
 # snaphu-rs
 
+[![crates.io](https://img.shields.io/crates/v/snaphu-rs.svg)](https://crates.io/crates/snaphu-rs) [![docs.rs](https://docs.rs/snaphu-rs/badge.svg)](https://docs.rs/snaphu-rs)
+
 This is a Rust-based implementation of the [SNAPHU](https://web.stanford.edu/group/radar/softwareandlinks/sw/snaphu/) library,
 a C implementation of a statistical-cost, network-flow algorithm for two-dimensional phase unwrapping.
 
