@@ -1,0 +1,17 @@
+[package]
+name = "snaphu-rs"
+version = "0.1.0"
+edition = "2024"
+license-file = "LICENSE"
+authors = ["Vinícius Freitas <vinifreitas.d.a@gmail.com>"]
+description = "Rust implementation of the SNAPHU C library"
+repository = "https://github.com/vini-fda/snaphu-rs"
+homepage = "https://github.com/vini-fda/snaphu-rs"
+documentation = "https://docs.rs/snaphu-rs"
+readme = "README.md"
+keywords = ["snaphu", "insar", "sar"]
+categories = ["science", "mathematics"]
+
+[dependencies]
+snaphu-sys = "0.1.2"
+libc = "0.2"
