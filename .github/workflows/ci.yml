@@ -11,7 +11,7 @@ env:
 
 jobs:
   build_and_test:
-    name: snaphu-sys-latest
+    name: snaphu-rs-latest
     runs-on: ubuntu-latest
     strategy:
       matrix:
