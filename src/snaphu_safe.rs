@@ -7,6 +7,11 @@ const ABNORMAL_EXIT: i32 = 1;
 
 const PRICE_MIN: f64 = 0.0;
 
+/// Sentinel value for buckets
+const DUMMY_NODE: NodeIndex = usize::MAX;
+/// Sentinel value for ranks (bucket indices)
+const DUMMY_RANK: BucketIndex = usize::MAX;
+
 pub type NodeIndex = usize;
 pub type ArcIndex = usize;
 pub type BucketIndex = usize;
@@ -41,7 +46,7 @@ pub struct Node {
     /// Previous node in a bucket-list
     pub b_prev: NodeIndex,
     /// Bucket number
-    pub rank: i64,
+    pub rank: BucketIndex,
     /// Excess of the node
     pub excess: i64,
     /// Temporary number of input arcs
@@ -54,6 +59,98 @@ pub struct Bucket {
     pub p_first: NodeIndex,
 }
 
+impl Bucket {
+    /// Create an empty bucket
+    pub fn new() -> Self {
+        Self {
+            p_first: DUMMY_NODE,
+        }
+    }
+
+    /// Reset bucket to empty
+    ///
+    /// Corresponds to SNAPHU's `RESET_BUCKET(b)` C macro
+    pub fn reset(&mut self) {
+        self.p_first = DUMMY_NODE;
+    }
+
+    /// Check if bucket is non-empty
+    ///
+    /// Corresponds to SNAPHU's `NONEMPTY_BUCKET(b)` C macro
+    pub fn is_nonempty(&self) -> bool {
+        self.p_first != DUMMY_NODE
+    }
+
+    /// Insert node of index `i` from `nodes` at front of bucket (O(1))
+    ///
+    /// Corresponds to SNAPHU's `INSERT_TO_BUCKET(i,b)` C macro
+    pub fn push_front(&mut self, i: NodeIndex, nodes: &mut [Node]) {
+        let first = self.p_first;
+
+        nodes[i].b_next = first;
+        nodes[i].b_prev = DUMMY_NODE;
+
+        if first != DUMMY_NODE {
+            nodes[first].b_prev = i;
+        }
+
+        self.p_first = i;
+    }
+
+    /// Remove and return first node from bucket (O(1))
+    ///
+    /// Corresponds to SNAPHU's `GET_FROM_BUCKET(i,b)` C macro
+    pub fn pop_front(&mut self, nodes: &mut [Node]) -> Option<NodeIndex> {
+        let i = self.p_first;
+        if i == DUMMY_NODE {
+            return None;
+        }
+
+        let next = nodes[i].b_next;
+        self.p_first = next;
+
+        if next != DUMMY_NODE {
+            nodes[next].b_prev = DUMMY_NODE;
+        }
+
+        nodes[i].b_next = DUMMY_NODE;
+        nodes[i].b_prev = DUMMY_NODE;
+
+        Some(i)
+    }
+
+    /// Remove arbitrary node from bucket (O(1))
+    ///
+    /// Corresponds to SNAPHU's `REMOVE_FROM_BUCKET(i,b)` C macro
+    pub fn remove(&mut self, i: NodeIndex, nodes: &mut [Node]) {
+        let prev = nodes[i].b_prev;
+        let next = nodes[i].b_next;
+
+        if prev == DUMMY_NODE {
+            // i is first element
+            self.p_first = next;
+        } else {
+            nodes[prev].b_next = next;
+        }
+
+        if next != DUMMY_NODE {
+            nodes[next].b_prev = prev;
+        }
+
+        nodes[i].b_next = DUMMY_NODE;
+        nodes[i].b_prev = DUMMY_NODE;
+    }
+
+    /// Peek first element without removing
+    pub fn peek(&self) -> Option<NodeIndex> {
+        if self.p_first == DUMMY_NODE {
+            None
+        } else {
+            Some(self.p_first)
+        }
+    }
+}
+
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub arcs: Vec<Arc>,
@@ -63,20 +160,19 @@ pub fn up_node_scan(
     nodes: &mut [Node],
     arcs: &[Arc],
     buckets: &mut [Bucket],
-    current_bucket: BucketIndex,
-    i: NodeIndex,
+    i: NodeIndex, /* node for scanning */
     n_scan: &mut usize,
     dn: f64,
     epsilon: f64,
-    linf: i64,  /* number of l_bucket + 1 */
-    dlinf: f64, /* copy of linf in double mode */
+    linf: BucketIndex, /* number of l_bucket + 1 */
+    dlinf: f64,        /* copy of linf in double mode */
 ) {
     let mut j: NodeIndex; /* opposite node */
-    let mut b_old: BucketIndex; /* old bucket contained j */
-    let mut b_new: BucketIndex; /* new bucket for j */
-    let mut j_rank: i64; /* ranks of nodes */
-    let mut j_new_rank: i64;
-    let i_rank: i64 = nodes[i].rank;
+    let mut b_old: Bucket; /* old bucket contained j */
+    let mut b_new: Bucket; /* new bucket for j */
+    let mut j_rank: BucketIndex; /* ranks of nodes */
+    let mut j_new_rank: BucketIndex;
+    let i_rank: BucketIndex = nodes[i].rank;
     let mut rc: f64; /* reduced cost of (j,i) */
     let mut dr: f64; /* rank difference */
     let mut a: ArcIndex = nodes[i].first; /* ( i, j ) */
@@ -94,7 +190,7 @@ pub fn up_node_scan(
                 } else {
                     dr = rc / epsilon;
                     j_new_rank = if dr < dlinf {
-                        i_rank + dr as i64 + 1
+                        i_rank + dr as BucketIndex + 1
                     } else {
                         linf
                     };
@@ -103,27 +199,18 @@ pub fn up_node_scan(
                     nodes[j].rank = j_new_rank;
                     nodes[j].current = ra;
                     if j_rank < linf {
-                        b_old = (current_bucket as i64 + j_rank) as BucketIndex;
-                        // TODO: reevaluate this REMOVE_FROM_BUCKET
-                        if j == buckets[b_old].p_first {
-                            buckets[b_old].p_first = nodes[j].b_next as NodeIndex;
-                        } else {
-                            nodes[nodes[j].b_prev].b_next = nodes[j].b_next;
-                            nodes[nodes[j].b_next].b_prev = nodes[j].b_prev;
-                        }
+                        b_old = buckets[j_rank];
+                        b_old.remove(j, nodes);
                     }
-                    b_new = (current_bucket as i64 + j_new_rank) as BucketIndex;
-                    // TODO: reevaluate this INSERT_TO_BUCKET
-                    nodes[j].b_next = buckets[b_new].p_first;
-                    nodes[buckets[b_new].p_first].b_prev = j;
-                    buckets[b_new].p_first = j;
+                    b_new = buckets[j_new_rank];
+                    b_new.push_front(j, nodes);
                 }
             }
         }
         a = a + 1;
     }
     nodes[i].price -= i_rank as f64 * epsilon;
-    nodes[i].rank = -1;
+    nodes[i].rank = DUMMY_RANK;
 }
 
 /// Relabels a node of index `i`.
