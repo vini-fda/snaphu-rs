@@ -37,3 +37,4 @@ where
 extern crate libc;
 // Keep this nodule private for now. It is a c2rust translation of the original SNAPHU code.
 mod snaphu_full;
+mod snaphu_safe;
