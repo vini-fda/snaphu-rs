@@ -156,6 +156,13 @@ pub struct Graph {
     pub arcs: Vec<Arc>,
 }
 
+/// Returns whether arc index `a` in `arcs` is open.
+///
+/// Corresponds to SNAPHU's `OPEN(a)` C macro
+pub fn is_open(arcs: &[Arc], a: ArcIndex) -> bool {
+    arcs[a].r_cap > 0
+}
+
 pub fn up_node_scan(
     nodes: &mut [Node],
     arcs: &[Arc],
@@ -175,17 +182,18 @@ pub fn up_node_scan(
     let i_rank: BucketIndex = nodes[i].rank;
     let mut rc: f64; /* reduced cost of (j,i) */
     let mut dr: f64; /* rank difference */
-    let mut a: ArcIndex = nodes[i].first; /* ( i, j ) */
+    let a_first: ArcIndex = nodes[i].first; /* "a" represents arcs ( i, j ) */
     let a_stop: ArcIndex = nodes[i + 1].suspended; /* first arc from the next node */
     *n_scan += 1;
-    while a != a_stop {
+    // Loop over all outgoing arcs from node i
+    for a in a_first..a_stop {
         let ra: ArcIndex = arcs[a].sister; /* ( j, i ) */
-        if arcs[ra].r_cap > 0 {
+        if is_open(arcs, ra) {
             j = arcs[a].head as NodeIndex;
             j_rank = nodes[j].rank;
             if j_rank > i_rank {
                 rc = nodes[j].price + dn * arcs[ra].cost as f64 - nodes[i].price;
-                if rc < 0 as f64 {
+                if rc < 0.0 {
                     j_new_rank = i_rank;
                 } else {
                     dr = rc / epsilon;
@@ -207,7 +215,6 @@ pub fn up_node_scan(
                 }
             }
         }
-        a = a + 1;
     }
     nodes[i].price -= i_rank as f64 * epsilon;
     nodes[i].rank = DUMMY_RANK;
@@ -240,7 +247,7 @@ pub fn relabel(
     let mut dp: f64;
 
     while a != a_stop {
-        if arcs[a].r_cap > 0 && {
+        if is_open(arcs, a) && {
             let head: NodeIndex = arcs[a].head;
             dp = nodes[head].price - dn * arcs[a].cost as f64;
             dp > p_max
@@ -257,7 +264,7 @@ pub fn relabel(
     a = nodes[i].first;
     a_stop = nodes[i].current + 1;
     while a != a_stop {
-        if arcs[a].r_cap > 0 && {
+        if is_open(arcs, a) && {
             let head: NodeIndex = arcs[a].head;
             dp = nodes[head].price - dn * arcs[a].cost as f64;
             dp > p_max
