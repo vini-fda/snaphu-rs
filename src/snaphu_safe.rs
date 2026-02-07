@@ -163,6 +163,11 @@ pub fn is_open(arcs: &[Arc], a: ArcIndex) -> bool {
     arcs[a].r_cap > 0
 }
 
+/// Scans all outgoing arcs of an active node `i` and relaxes neighboring nodes
+/// using a bucketed label update.
+///
+/// This is a core primitive in the push–relabel algorithm,
+/// where buckets replace priority queues to achieve linear-time label updates.
 pub fn up_node_scan(
     nodes: &mut [Node],
     arcs: &[Arc],
@@ -220,7 +225,13 @@ pub fn up_node_scan(
     nodes[i].rank = DUMMY_RANK;
 }
 
-/// Relabels a node of index `i`.
+/// Attempts to relabel node of index `i` by scanning its outgoing residual arcs and
+/// updating its price (label) to the best admissible value.
+///
+/// This is a local relaxation step over the adjacency list
+/// of node `i`: it finds the neighbor that maximizes a reduced-price expression
+/// and either selects an admissible arc or raises `i`’s label accordingly.
+/// Returns `true` if an admissible outgoing arc is found, and `false` otherwise.
 pub fn relabel(
     nodes: &mut [Node],
     arcs: &[Arc],
