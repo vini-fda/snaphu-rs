@@ -163,6 +163,75 @@ pub fn is_open(arcs: &[Arc], a: ArcIndex) -> bool {
     arcs[a].r_cap > 0
 }
 
+pub fn price_update(
+    nodes: &mut [Node],
+    arcs: &[Arc],
+    buckets: &mut [Bucket],
+    n_update: &mut usize,
+    n_scan: &mut usize,
+    dn: f64,
+    epsilon: f64,
+    linf: BucketIndex, /* number of l_bucket + 1 */
+    dlinf: f64,        /* copy of linf in double mode */
+    total_excess: f64,
+    l_bucket: BucketIndex,
+    price_min: f64,
+    flag_updt: &mut bool, /* if true - update failed some sources are
+                          unreachable: either the problem is
+                          unfeasible or you have to return
+                          suspended arcs */
+) {
+    *n_update += 1;
+    for i in 0..nodes.len() {
+        if nodes[i].excess < 0 {
+            let mut first_bucket = buckets[0];
+            first_bucket.push_front(i, nodes);
+            nodes[i].rank = 0;
+        } else {
+            nodes[i].rank = linf;
+        }
+    }
+    let mut remain: f64 = total_excess;
+    if remain < 0.5 {
+        return;
+    }
+
+    let mut b: BucketIndex = 0;
+    let mut i: NodeIndex;
+    while b < l_bucket {
+        while buckets[b].is_nonempty() {
+            i = buckets[b].pop_front(nodes).expect("expected a node");
+            up_node_scan(nodes, arcs, buckets, i, n_scan, dn, epsilon, linf, dlinf);
+            if nodes[i].excess <= 0 {
+                continue;
+            }
+            remain -= nodes[i].excess as f64;
+            if remain <= 0.0 {
+                break;
+            }
+        } /* end of scanning the bucket */
+        if remain <= 0.0 {
+            break;
+        }
+        b = b + 1;
+    } /* end of scanning buckets */
+    if remain > 0.5 {
+        *flag_updt = true;
+    }
+    /* changing prices for nodes which were not scanned during main loop */
+    let dp: f64 = b as f64 * epsilon;
+
+    for i in 0..nodes.len() {
+        if nodes[i].rank < linf {
+            let mut bucket = buckets[nodes[i].rank];
+            bucket.remove(i, nodes);
+        }
+        if nodes[i].price > price_min {
+            nodes[i].price -= dp;
+        }
+    }
+}
+
 /// Scans all outgoing arcs of an active node `i` and relaxes neighboring nodes
 /// using a bucketed label update.
 ///
