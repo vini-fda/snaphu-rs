@@ -330,6 +330,22 @@ pub fn wrap_phase(field: &mut [f32], rows: usize, cols: usize) {
     }
 }
 
+/// Flips the sign of every phase sample when `flip_phase_sign` is enabled.
+///
+/// Equivalent of the C `FlipPhaseArraySign` helper.
+pub fn flip_phase_array_sign(field: &mut [f32], rows: usize, cols: usize, flip_phase_sign: bool) {
+    let total = rows
+        .checked_mul(cols)
+        .expect("rows*cols would overflow when validating array length");
+    assert_eq!(field.len(), total, "phase field length mismatch");
+
+    if flip_phase_sign {
+        for value in field.iter_mut() {
+            *value = -*value;
+        }
+    }
+}
+
 /// Computes the difference between `f1` and `f2` wrapped into `(-π, π]`.
 pub fn mod_diff(f1: f64, f2: f64) -> f64 {
     let mut diff = f1 - f2;
@@ -787,6 +803,20 @@ mod tests {
         assert!(field[0] >= 0.0 && field[0] < TWO_PI_F32);
         assert_eq!(field[1], 0.0);
         assert!((field[2] - std::f32::consts::PI).abs() < 1e-5);
+    }
+
+    #[test]
+    fn flip_phase_array_sign_flips_when_enabled() {
+        let mut field = vec![1.0f32, -2.5, 0.25, 0.0];
+        flip_phase_array_sign(&mut field, 2, 2, true);
+        assert_eq!(field, vec![-1.0, 2.5, -0.25, 0.0]);
+    }
+
+    #[test]
+    fn flip_phase_array_sign_preserves_when_disabled() {
+        let mut field = vec![1.0f32, -2.5, 0.25, 0.0];
+        flip_phase_array_sign(&mut field, 2, 2, false);
+        assert_eq!(field, vec![1.0, -2.5, 0.25, 0.0]);
     }
 
     #[test]

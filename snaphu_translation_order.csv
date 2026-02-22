@@ -56,7 +56,7 @@ FindScndryNode,6,DONE
 finishup,6,NOT_PLANNED
 FlattenWrappedPhase,3,DONE
 FlipFlowArraySign,3,
-FlipPhaseArraySign,4,
+FlipPhaseArraySign,4,DONE
 Free2DArray,6,NOT_PLANNED
 Get2DMem,7,NOT_PLANNED
 Get2DRowColMem,6,NOT_PLANNED

@@ -72,7 +72,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Lookup-table builders `BuildDZRCritLookupTable` and `BuildDZRhoMaxLookupTable` are implemented in `costs::lookup` with typed parameter structs and smoke tests.
    - ✅ Bucket helpers mirroring `BucketInsert/Remove` exist in `network::bucket` with invariants enforced by Rust errors/tests.
    - ✅ Mirror padding (`MirrorPad`) and interpolation helpers (`LinInterp1D/2D`) are available under `data::ops` with regression tests.
-   - ✅ Phase wrapping utilities (`FlattenWrappedPhase`, `WrapPhase`, `ModDiff`) now live in `data::ops`, keeping wrapped values inside `[0, 2π)` and matching the short-cycle behaviour from the C code.
+   - ✅ Phase wrapping/sign helpers (`FlattenWrappedPhase`, `WrapPhase`, `ModDiff`, `FlipPhaseArraySign`) now live in `data::ops`, keeping wrapped values inside `[0, 2π)` and matching the short-cycle behaviour from the C code.
    - ✅ Wrapped-gradient calculators (`CalcWrappedRangeDiffs/AzDiffs`) have idiomatic equivalents in `costs::gradients`, exposing typed outputs for cost builders and reusing the shared boxcar/mirror-pad helpers.
    - ✅ Masking helpers (`MaskCost`, `MaskSmoothCost`, `MaskPrespecifiedArcCosts`) are available in `costs::types` along with strongly typed cost records, so future modules can drop the pointer-heavy c2rust shims.
    - ✅ Mirror padding now has a `mirror_pad_with_fill` variant that works for any `Copy` type, so non-f32 rasters (e.g. shorts, custom structs) can reuse the same primitive.
