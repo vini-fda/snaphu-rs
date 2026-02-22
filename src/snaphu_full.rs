@@ -1,3 +1,4 @@
+#![allow(warnings)]
 unsafe extern "C" {
     fn printf(_: *const ::core::ffi::c_char, ...) -> ::core::ffi::c_int;
     static mut __stdinp: *mut FILE;
@@ -675,11 +676,11 @@ pub const RUSAGE_SELF: ::core::ffi::c_int = 0 as ::core::ffi::c_int;
 pub const RUSAGE_CHILDREN: ::core::ffi::c_int = -(1 as ::core::ffi::c_int);
 #[inline(always)]
 unsafe extern "C" fn __inline_isfinitef(mut __x: ::core::ffi::c_float) -> ::core::ffi::c_int {
-    return (__x == __x && __x.abs() != ::core::f32::INFINITY) as ::core::ffi::c_int;
+    return (__x.abs() != ::core::f32::INFINITY) as ::core::ffi::c_int;
 }
 #[inline(always)]
 unsafe extern "C" fn __inline_isfinited(mut __x: ::core::ffi::c_double) -> ::core::ffi::c_int {
-    return (__x == __x && __x.abs() != ::core::f64::INFINITY) as ::core::ffi::c_int;
+    return (__x.abs() != ::core::f64::INFINITY) as ::core::ffi::c_int;
 }
 pub const _CTYPE_A: ::core::ffi::c_long = 0x100 as ::core::ffi::c_long;
 pub const _CTYPE_D: ::core::ffi::c_long = 0x400 as ::core::ffi::c_long;
@@ -712,9 +713,9 @@ pub const PROGRAMNAME: [::core::ffi::c_char; 7] =
     unsafe { ::core::mem::transmute::<[u8; 7], [::core::ffi::c_char; 7]>(*b"snaphu\0") };
 pub const VERSION: [::core::ffi::c_char; 6] =
     unsafe { ::core::mem::transmute::<[u8; 6], [::core::ffi::c_char; 6]>(*b"2.0.7\0") };
-pub const PI: ::core::ffi::c_double = 3.14159265358979323846f64;
-pub const TWOPI: ::core::ffi::c_double = 6.28318530717958647692f64;
-pub const SQRTHALF: ::core::ffi::c_double = 0.70710678118654752440f64;
+pub const PI: ::core::ffi::c_double = std::f64::consts::PI;
+pub const TWOPI: ::core::ffi::c_double = std::f64::consts::TAU;
+pub const SQRTHALF: ::core::ffi::c_double = std::f64::consts::FRAC_1_SQRT_2;
 pub const MAXSTRLEN: ::core::ffi::c_int = 512 as ::core::ffi::c_int;
 pub const MAXLINELEN: ::core::ffi::c_int = 2048 as ::core::ffi::c_int;
 pub const TRUE: ::core::ffi::c_int = 1 as ::core::ffi::c_int;
