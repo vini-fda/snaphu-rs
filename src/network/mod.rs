@@ -5,6 +5,7 @@
 pub mod bucket;
 
 use crate::constants::{GROUNDROW, MASKED};
+use crate::costs::types::IncrCost;
 
 pub struct TileGraph;
 
@@ -28,6 +29,201 @@ pub enum NetworkError {
 pub struct ArcNumLimits {
     pub arcnum_start: i64,
     pub upper_arcnum: i64,
+}
+
+/// Per-node state used by translated tree-solver helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeNodeGroup {
+    NotInBucket,
+    InBucket,
+    OnTree,
+    Pruned,
+    Masked,
+}
+
+/// Minimal node view needed by `add_new_node()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeNode {
+    pub outcost: i64,
+    pub pred: Option<usize>,
+    pub group: TreeNodeGroup,
+    bucket_index: Option<i64>,
+}
+
+impl TreeNode {
+    pub fn new(outcost: i64) -> Self {
+        Self {
+            outcost,
+            pred: None,
+            group: TreeNodeGroup::NotInBucket,
+            bucket_index: None,
+        }
+    }
+
+    pub fn bucket_index(&self) -> Option<i64> {
+        self.bucket_index
+    }
+}
+
+/// Bucket window for the translated tree-solver queue.
+///
+/// The C implementation stores nodes into buckets using signed indices
+/// `[minind, maxind]`, with underflow and overflow clamping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontierBuckets {
+    slots: Vec<Vec<usize>>,
+    pub curr: i64,
+    pub minind: i64,
+    pub maxind: i64,
+}
+
+impl FrontierBuckets {
+    pub fn new(minind: i64, maxind: i64, curr: i64) -> Result<Self, AddNodeError> {
+        if maxind < minind {
+            return Err(AddNodeError::InvalidBucketBounds { minind, maxind });
+        }
+        let width = (maxind - minind + 1) as usize;
+        Ok(Self {
+            slots: vec![Vec::new(); width],
+            curr,
+            minind,
+            maxind,
+        })
+    }
+
+    fn bucket_to_offset(&self, bucket: i64) -> Result<usize, AddNodeError> {
+        if bucket < self.minind || bucket > self.maxind {
+            return Err(AddNodeError::BucketOutOfRange {
+                bucket,
+                minind: self.minind,
+                maxind: self.maxind,
+            });
+        }
+        Ok((bucket - self.minind) as usize)
+    }
+
+    fn bucket_mut(&mut self, bucket: i64) -> Result<&mut Vec<usize>, AddNodeError> {
+        let offset = self.bucket_to_offset(bucket)?;
+        Ok(&mut self.slots[offset])
+    }
+
+    fn remove(&mut self, bucket: i64, node_idx: usize) -> Result<(), AddNodeError> {
+        let slot = self.bucket_mut(bucket)?;
+        let Some(position) = slot.iter().position(|&idx| idx == node_idx) else {
+            return Err(AddNodeError::NodeNotPresentInBucket { node_idx, bucket });
+        };
+        slot.swap_remove(position);
+        Ok(())
+    }
+
+    fn insert(&mut self, bucket: i64, node_idx: usize) -> Result<(), AddNodeError> {
+        let slot = self.bucket_mut(bucket)?;
+        slot.push(node_idx);
+        Ok(())
+    }
+
+    /// C-style underflow/overflow bucket clamping.
+    #[inline]
+    pub fn clamp_bucket_index(&self, cost: i64) -> i64 {
+        if cost < self.minind {
+            self.minind
+        } else if cost < self.maxind {
+            cost
+        } else {
+            self.maxind
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddNodeError {
+    InvalidBucketBounds {
+        minind: i64,
+        maxind: i64,
+    },
+    InvalidNodeIndex {
+        index: usize,
+        len: usize,
+    },
+    ArcOutOfBounds {
+        arcrow: usize,
+        arccol: usize,
+    },
+    BucketOutOfRange {
+        bucket: i64,
+        minind: i64,
+        maxind: i64,
+    },
+    NodeNotPresentInBucket {
+        node_idx: usize,
+        bucket: i64,
+    },
+}
+
+/// Adds a node to the bucket queue if needed, updating predecessor/outcost.
+///
+/// This is the idiomatic Rust equivalent of the C `AddNewNode()` function.
+/// The update rule is preserved exactly:
+/// - compute `newoutcost = from.outcost + GetCost(...)`
+/// - update when `newoutcost < to.outcost` OR `to.pred == from`
+/// - if `to` is already in a bucket, remove it first
+/// - reinsert into an in-range, underflow, or overflow bucket
+/// - update `curr` following the C underflow/in-range rules
+pub fn add_new_node(
+    from_idx: usize,
+    to_idx: usize,
+    arcdir: i64,
+    nodes: &mut [TreeNode],
+    buckets: &mut FrontierBuckets,
+    incrcosts: &[Vec<IncrCost>],
+    arcrow: usize,
+    arccol: usize,
+) -> Result<(), AddNodeError> {
+    let len = nodes.len();
+    let from = *nodes.get(from_idx).ok_or(AddNodeError::InvalidNodeIndex {
+        index: from_idx,
+        len,
+    })?;
+    let to = *nodes
+        .get(to_idx)
+        .ok_or(AddNodeError::InvalidNodeIndex { index: to_idx, len })?;
+    let arc_cost = incrcosts
+        .get(arcrow)
+        .and_then(|row| row.get(arccol))
+        .ok_or(AddNodeError::ArcOutOfBounds { arcrow, arccol })?;
+    let newoutcost = from.outcost + i64::from(arc_cost.get_cost(arcdir));
+
+    if !(newoutcost < to.outcost || to.pred == Some(from_idx)) {
+        return Ok(());
+    }
+
+    if to.group == TreeNodeGroup::InBucket {
+        // Match C semantics by deriving the prior bucket from the previous
+        // outcost with underflow/overflow clamping.
+        let old_bucket = buckets.clamp_bucket_index(to.outcost);
+        buckets.remove(old_bucket, to_idx)?;
+        nodes[to_idx].bucket_index = None;
+    }
+
+    nodes[to_idx].outcost = newoutcost;
+    nodes[to_idx].pred = Some(from_idx);
+    let new_bucket = buckets.clamp_bucket_index(newoutcost);
+    buckets.insert(new_bucket, to_idx)?;
+    nodes[to_idx].bucket_index = Some(new_bucket);
+    nodes[to_idx].group = TreeNodeGroup::InBucket;
+
+    // Keep the original strict comparisons from C.
+    if newoutcost < buckets.maxind {
+        if newoutcost > buckets.minind {
+            if newoutcost < buckets.curr {
+                buckets.curr = newoutcost;
+            }
+        } else {
+            buckets.curr = buckets.minind;
+        }
+    }
+
+    Ok(())
 }
 
 /// Get the initial and ending values for `arcnum` to scan neighbors of a node.
@@ -548,5 +744,157 @@ mod tests {
     #[test]
     fn find_secondary_node_empty_slice() {
         assert_eq!(find_secondary_node_index(&[], 0, 0), None);
+    }
+
+    // --- AddNewNode ---
+
+    fn make_incrcost_grid(pos: i16, neg: i16) -> Vec<Vec<IncrCost>> {
+        vec![vec![IncrCost::new(pos, neg)]]
+    }
+
+    #[test]
+    fn add_new_node_inserts_and_updates_curr_for_in_range_cost() {
+        let mut nodes = vec![TreeNode::new(10), TreeNode::new(100)];
+        let mut buckets = FrontierBuckets::new(0, 50, 20).unwrap();
+
+        add_new_node(
+            0,
+            1,
+            1,
+            &mut nodes,
+            &mut buckets,
+            &make_incrcost_grid(5, -5),
+            0,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(nodes[1].outcost, 15);
+        assert_eq!(nodes[1].pred, Some(0));
+        assert_eq!(nodes[1].group, TreeNodeGroup::InBucket);
+        assert_eq!(nodes[1].bucket_index(), Some(15));
+        assert_eq!(buckets.curr, 15);
+    }
+
+    #[test]
+    fn add_new_node_noop_when_not_improved_and_pred_differs() {
+        let mut nodes = vec![TreeNode::new(10), TreeNode::new(12)];
+        nodes[1].pred = Some(99);
+        let mut buckets = FrontierBuckets::new(0, 50, 20).unwrap();
+
+        add_new_node(
+            0,
+            1,
+            1,
+            &mut nodes,
+            &mut buckets,
+            &make_incrcost_grid(5, -5),
+            0,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(nodes[1].outcost, 12);
+        assert_eq!(nodes[1].pred, Some(99));
+        assert_eq!(nodes[1].group, TreeNodeGroup::NotInBucket);
+        assert_eq!(nodes[1].bucket_index(), None);
+    }
+
+    #[test]
+    fn add_new_node_forces_update_when_pred_matches_from() {
+        let mut nodes = vec![TreeNode::new(10), TreeNode::new(12)];
+        nodes[1].pred = Some(0);
+        nodes[1].group = TreeNodeGroup::InBucket;
+        nodes[1].bucket_index = Some(12);
+
+        let mut buckets = FrontierBuckets::new(0, 50, 20).unwrap();
+        buckets.insert(12, 1).unwrap();
+
+        add_new_node(
+            0,
+            1,
+            1,
+            &mut nodes,
+            &mut buckets,
+            &make_incrcost_grid(5, -5),
+            0,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(nodes[1].outcost, 15);
+        assert_eq!(nodes[1].pred, Some(0));
+        assert_eq!(nodes[1].bucket_index(), Some(15));
+    }
+
+    #[test]
+    fn add_new_node_underflow_clamps_to_min_bucket_and_moves_curr() {
+        let mut nodes = vec![TreeNode::new(5), TreeNode::new(99)];
+        let mut buckets = FrontierBuckets::new(10, 100, 80).unwrap();
+
+        add_new_node(
+            0,
+            1,
+            -1,
+            &mut nodes,
+            &mut buckets,
+            &make_incrcost_grid(1, -20),
+            0,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(nodes[1].outcost, -15);
+        assert_eq!(nodes[1].bucket_index(), Some(10));
+        assert_eq!(buckets.curr, 10);
+    }
+
+    #[test]
+    fn add_new_node_overflow_clamps_to_max_bucket_without_curr_change() {
+        let mut nodes = vec![TreeNode::new(90), TreeNode::new(200)];
+        let mut buckets = FrontierBuckets::new(0, 100, 30).unwrap();
+
+        add_new_node(
+            0,
+            1,
+            1,
+            &mut nodes,
+            &mut buckets,
+            &make_incrcost_grid(30, -30),
+            0,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(nodes[1].outcost, 120);
+        assert_eq!(nodes[1].bucket_index(), Some(100));
+        assert_eq!(buckets.curr, 30);
+    }
+
+    #[test]
+    fn add_new_node_reinsert_removes_from_clamped_old_bucket() {
+        let mut nodes = vec![TreeNode::new(30), TreeNode::new(-3)];
+        nodes[1].group = TreeNodeGroup::InBucket;
+        nodes[1].bucket_index = Some(0);
+        let mut buckets = FrontierBuckets::new(0, 100, 50).unwrap();
+        buckets.insert(0, 1).unwrap();
+
+        add_new_node(
+            0,
+            1,
+            -1,
+            &mut nodes,
+            &mut buckets,
+            &make_incrcost_grid(10, -40),
+            0,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(nodes[1].outcost, -10);
+        assert_eq!(nodes[1].bucket_index(), Some(0));
+        let min_slot = buckets.bucket_mut(0).unwrap();
+        assert_eq!(min_slot.len(), 1);
+        assert_eq!(min_slot[0], 1);
     }
 }

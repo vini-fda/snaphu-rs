@@ -1,6 +1,6 @@
 Function Name,Priority,Status
 Add2DFloatArrays,3,DONE
-AddNewNode,5,
+AddNewNode,5,DONE
 AssembleTileConnComps,3,
 AssembleTiles,2,
 AvgSigSq,5,DONE
