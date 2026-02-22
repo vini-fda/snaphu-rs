@@ -21,7 +21,7 @@ CalcFlow,5,
 CalcInitMaxFlow,4,
 CalcWrappedAzDiffs,5,DONE
 CalcWrappedRangeDiffs,5,DONE
-CAlloc,8,NOT PLANNED
+CAlloc,8,NOT_PLANNED
 CatchSignals,2,
 CheckArcReducedCost,4,
 CheckBoundary,5,
@@ -93,7 +93,7 @@ LogFileFormat,2,
 LogStringParam,2,
 LRound,6,DONE
 MakeTileDir,2,
-MAlloc,8,NOT PLANNED
+MAlloc,8,NOT_PLANNED
 MaskCost,5,DONE
 MaskNodes,3,
 MaskPrespecifiedArcCosts,4,DONE
@@ -173,7 +173,7 @@ SolveMST,4,
 StartTimers,2,
 StringToDouble,4,
 StringToLong,4,
-StrNCopy,8,NOT PLANNED
+StrNCopy,8,NOT_PLANNED
 ThickenCosts,4,
 TraceRegions,3,
 TraceSecondaryArc,5,
