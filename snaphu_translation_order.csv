@@ -185,7 +185,7 @@ update_epsilon,6,NOT_PLANNED
 ValidDataArray,6,DONE
 WrapPhase,4,DONE
 Write2DArray,5,DONE
-Write2DRowColArray,4,
+Write2DRowColArray,4,DONE
 WriteAltLineFile,5,DONE
 WriteAltSampFile,5,DONE
 WriteConfigLogFile,1,

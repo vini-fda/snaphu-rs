@@ -132,6 +132,66 @@ pub fn write_2d_array<T: NativeWritable>(
     Ok(opened.real_path)
 }
 
+/// Write row/column arc arrays to the packed RowCol on-disk layout.
+///
+/// Equivalent of the C `Write2DRowColArray()` helper:
+/// - row-arc block first: `(nrow-1) x ncol`
+/// - col-arc block second: `nrow x (ncol-1)`
+pub fn write_2d_row_col_array<T: NativeWritable>(
+    row_arcs: &Raster<T>,
+    col_arcs: &Raster<T>,
+    filename: &Path,
+) -> io::Result<PathBuf> {
+    if row_arcs.height + 1 != col_arcs.height || row_arcs.width != col_arcs.width + 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "row/col arc dimensions are inconsistent",
+        ));
+    }
+
+    let expected_row = row_arcs
+        .width
+        .checked_mul(row_arcs.height)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "row-arc size overflow"))?;
+    if row_arcs.data.len() != expected_row {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "row_arcs data length does not match width*height",
+        ));
+    }
+
+    let expected_col = col_arcs
+        .width
+        .checked_mul(col_arcs.height)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "col-arc size overflow"))?;
+    if col_arcs.data.len() != expected_col {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "col_arcs data length does not match width*height",
+        ));
+    }
+
+    let mut opened = open_output_file(filename)?;
+    for row in 0..row_arcs.height {
+        let start = row * row_arcs.width;
+        let end = start + row_arcs.width;
+        for sample in &row_arcs.data[start..end] {
+            sample.write_ne(&mut opened.file)?;
+        }
+    }
+
+    for row in 0..col_arcs.height {
+        let start = row * col_arcs.width;
+        let end = start + col_arcs.width;
+        for sample in &col_arcs.data[start..end] {
+            sample.write_ne(&mut opened.file)?;
+        }
+    }
+
+    opened.file.flush()?;
+    Ok(opened.real_path)
+}
+
 /// Write magnitude and phase rasters as alternating full lines:
 /// `[mag row][phase row][mag row][phase row]...`.
 ///
@@ -200,7 +260,9 @@ pub fn write_alt_samp_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::reader::{TileWindow, read_2d_array, read_alt_line_file, read_alt_samp_file};
+    use crate::io::reader::{
+        TileWindow, read_2d_array, read_2d_row_col_file, read_alt_line_file, read_alt_samp_file,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -285,5 +347,35 @@ mod tests {
         assert_eq!(ra.data, a.data);
         assert_eq!(rb.data, b.data);
         fs::remove_file(written).unwrap();
+    }
+
+    #[test]
+    fn write_2d_row_col_array_round_trips_row_and_col_blocks() {
+        let path =
+            std::env::temp_dir().join(format!("snaphu_rs_write_rowcol_{}.bin", unique_suffix()));
+        let row_arcs = Raster::new(3, 2, vec![1i16, 2, 3, 4, 5, 6]);
+        let col_arcs = Raster::new(2, 3, vec![10i16, 11, 12, 13, 14, 15]);
+
+        let written = write_2d_row_col_array(&row_arcs, &col_arcs, &path).unwrap();
+        let tile =
+            read_2d_row_col_file::<i16>(&written, 3, 3, TileWindow::new(0, 0, 3, 3)).unwrap();
+        assert_eq!(tile.row_arcs.data, row_arcs.data);
+        assert_eq!(tile.col_arcs.data, col_arcs.data);
+
+        fs::remove_file(written).unwrap();
+    }
+
+    #[test]
+    fn write_2d_row_col_array_rejects_inconsistent_dimensions() {
+        let path = std::env::temp_dir().join(format!(
+            "snaphu_rs_write_rowcol_dims_{}.bin",
+            unique_suffix()
+        ));
+        let row_arcs = Raster::new(4, 2, vec![0i16; 8]);
+        let col_arcs = Raster::new(2, 3, vec![0i16; 6]);
+
+        let err = write_2d_row_col_array(&row_arcs, &col_arcs, &path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("inconsistent"));
     }
 }
