@@ -79,6 +79,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Miscellaneous Level ≥5 math helpers (`LRound`, `LMin`) now live alongside `l_clip` so the rest of the cost code can stop calling into the legacy module.
    - ✅ Array sanity helpers (`ValidDataArray`, `NonNegDataArray`) have idiomatic equivalents in `data::ops`, keeping the raster validators in one place.
    - ✅ Network neighbor-loop helper `GetArcNumLims` now has a typed Rust equivalent in `network::mod` with explicit boundary-count validation and branch-coverage tests.
+   - ✅ Output-file opener `OpenOutputFile` now lives in `io::writer` with `/tmp` fallback semantics, real-path reporting, and regression tests for primary/fallback/error paths.
    - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
     - Group remaining Priority ≥5 helpers into clearer buckets so they can be tackled incrementally:
       * Memory allocators / deallocators (Get2DMem, Free2DArray, Read/Write2D) – replace with Vec-backed helpers or document why to skip)

@@ -108,7 +108,7 @@ MSTInitFlows,3,
 NodeResidue,5,
 NonDegenUpdateChildren,4,
 NonNegDataArray,6,DONE
-OpenOutputFile,6,
+OpenOutputFile,6,DONE
 ParseConfigLine,3,
 ParseFilename,7,DONE
 ParseSecondaryFlows,4,
