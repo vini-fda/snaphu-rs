@@ -503,7 +503,7 @@ mod tests {
         let mut wrapped = vec![0.0f32, 3.0, -1.0, 9.0];
         let unwrapped = vec![1.0f32, 1.5, -5.0, 4.0];
         flatten_wrapped_phase(&mut wrapped, &unwrapped, 2, 2);
-        let expected = vec![
+        let expected = [
             TWO_PI_F32 - 1.0,
             1.5,
             4.0,

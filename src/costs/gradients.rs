@@ -236,7 +236,11 @@ pub fn compute_azimuth_gradients(
 }
 
 fn validate_kernel(kernel_rows: usize, kernel_cols: usize) -> Result<(), WrappedGradientError> {
-    if kernel_rows == 0 || kernel_cols == 0 || kernel_rows % 2 == 0 || kernel_cols % 2 == 0 {
+    if kernel_rows == 0
+        || kernel_cols == 0
+        || kernel_rows.is_multiple_of(2)
+        || kernel_cols.is_multiple_of(2)
+    {
         return Err(WrappedGradientError::InvalidKernel {
             kernel_rows,
             kernel_cols,
