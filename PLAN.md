@@ -67,6 +67,7 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
    - ✅ Mirror padding (`MirrorPad`) and interpolation helpers (`LinInterp1D/2D`) are available under `data::ops` with regression tests.
    - ✅ Phase wrapping utilities (`FlattenWrappedPhase`, `WrapPhase`, `ModDiff`) now live in `data::ops`, keeping wrapped values inside `[0, 2π)` and matching the short-cycle behaviour from the C code.
    - ✅ Wrapped-gradient calculators (`CalcWrappedRangeDiffs/AzDiffs`) have idiomatic equivalents in `costs::gradients`, exposing typed outputs for cost builders and reusing the shared boxcar/mirror-pad helpers.
+   - ✅ Masking helpers (`MaskCost`, `MaskSmoothCost`) are available in `costs::types` along with strongly typed cost records, so future modules can drop the pointer-heavy c2rust shims.
    - Remaining work in this phase: mirror padding variants for non-f32 rasters and any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
 3. **Cost builders (Priority 4)**
    - Implement `BuildStatCosts*` in `costs` module, ensuring they only depend on previously translated helpers and `RuntimeState` slices.
