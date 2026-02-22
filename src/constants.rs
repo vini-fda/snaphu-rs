@@ -33,6 +33,10 @@ pub const TWO_PI_F32: f32 = std::f32::consts::TAU;
 /// magnitude). Mirrors the C `MASKED` macro (`-5`).
 pub const MASKED: i32 = -5;
 
+/// Sentinel row value for the "ground" node in the network graph.
+/// Mirrors the C `GROUNDROW` macro (`-2`).
+pub const GROUNDROW: i64 = -2;
+
 /// Number of directional arms used by the `Despeckle` filter.
 pub const NARMS: usize = 8;
 

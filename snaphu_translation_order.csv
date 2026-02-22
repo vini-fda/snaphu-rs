@@ -79,10 +79,10 @@ IntegratePhase,4,
 IntegrateSecondaryFlows,3,
 IsFalse,5,DONE
 IsFinite,7,DONE
-IsRegionArc,6,
-IsRegionEdgeArc,5,
-IsRegionEdgeNode,5,
-IsRegionInteriorArc,5,
+IsRegionArc,6,DONE
+IsRegionEdgeArc,5,DONE
+IsRegionEdgeNode,5,DONE
+IsRegionInteriorArc,5,DONE
 IsTrue,5,DONE
 LClip,6,DONE
 LinInterp1D,6,DONE
