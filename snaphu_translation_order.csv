@@ -123,7 +123,7 @@ Read2DRowColFile,5,
 Read2DRowColFileRows,4,
 ReadAltLineFile,6,DONE
 ReadAltLineFilePhase,6,DONE
-ReadAltSampFile,6,
+ReadAltSampFile,6,DONE
 ReadByteMask,3,
 ReadComplexFile,4,
 ReadConfigFile,2,

@@ -340,6 +340,97 @@ pub fn read_alt_line_file_phase(
     Ok(Raster::new(window.ncol, window.nrow, phase_data))
 }
 
+/// Read data from a file containing alternating float samples from two images:
+/// `a0, b0, a1, b1, ...`.
+///
+/// This is the idiomatic Rust equivalent of the C `ReadAltSampFile()`
+/// function.
+pub fn read_alt_samp_file(
+    infile: &Path,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+) -> io::Result<(Raster<f32>, Raster<f32>)> {
+    if window.first_row > nlines
+        || window.first_col > line_len
+        || window.first_row + window.nrow > nlines
+        || window.first_col + window.ncol > line_len
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "tile window exceeds source raster bounds",
+        ));
+    }
+
+    let expected_size = 2usize
+        .checked_mul(nlines)
+        .and_then(|v| v.checked_mul(line_len))
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "expected file size overflow")
+        })?;
+
+    let mut fp = File::open(infile)?;
+    let filesize = fp.metadata()?.len() as usize;
+    if filesize != expected_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "file {} wrong size ({}x{} array expected)",
+                infile.display(),
+                nlines,
+                line_len
+            ),
+        ));
+    }
+
+    let start_byte = (window
+        .first_row
+        .checked_mul(line_len)
+        .and_then(|v| v.checked_add(window.first_col))
+        .and_then(|v| v.checked_mul(2)))
+    .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek offset overflow"))?;
+    fp.seek(SeekFrom::Start(start_byte as u64))?;
+
+    let interleaved_row_bytes = window
+        .ncol
+        .checked_mul(2)
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "row read width overflow"))?;
+    let pad_bytes = (line_len - window.ncol)
+        .checked_mul(2)
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "row padding overflow"))?;
+    let pad_skip = i64::try_from(pad_bytes).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "row padding too large to seek")
+    })?;
+
+    let mut arr1_data = Vec::with_capacity(window.nrow * window.ncol);
+    let mut arr2_data = Vec::with_capacity(window.nrow * window.ncol);
+    let mut rowbuf = vec![0u8; interleaved_row_bytes];
+    for _ in 0..window.nrow {
+        if interleaved_row_bytes > 0 {
+            fp.read_exact(&mut rowbuf)?;
+            for pair in rowbuf.chunks_exact(2 * std::mem::size_of::<f32>()) {
+                let a: [u8; 4] = pair[0..4].try_into().expect("invalid f32 sample chunk");
+                let b: [u8; 4] = pair[4..8].try_into().expect("invalid f32 sample chunk");
+                arr1_data.push(f32::from_ne_bytes(a));
+                arr2_data.push(f32::from_ne_bytes(b));
+            }
+        }
+
+        if pad_skip > 0 {
+            fp.seek(SeekFrom::Current(pad_skip))?;
+        }
+    }
+
+    Ok((
+        Raster::new(window.ncol, window.nrow, arr1_data),
+        Raster::new(window.ncol, window.nrow, arr2_data),
+    ))
+}
+
 /// Split a file path into its parent directory and base filename.
 ///
 /// This is the idiomatic Rust equivalent of the C `ParseFilename()` function,
@@ -575,6 +666,59 @@ mod tests {
         drop(fp);
 
         let err = read_alt_line_file_phase(&path, 4, 3, TileWindow::new(2, 3, 2, 2)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("tile window"));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_alt_samp_file_splits_interleaved_samples() {
+        let path = temp_file("snaphu_rs_read_alt_samp");
+        let mut fp = File::create(&path).unwrap();
+        for row in 0..3u32 {
+            for col in 0..4u32 {
+                let a = (row * 10 + col) as f32;
+                let b = (row * 100 + col) as f32;
+                fp.write_all(&a.to_ne_bytes()).unwrap();
+                fp.write_all(&b.to_ne_bytes()).unwrap();
+            }
+        }
+        drop(fp);
+
+        let (arr1, arr2) = read_alt_samp_file(&path, 4, 3, TileWindow::new(1, 1, 2, 2)).unwrap();
+        assert_eq!(arr1.width, 2);
+        assert_eq!(arr1.height, 2);
+        assert_eq!(arr1.data, vec![11.0, 12.0, 21.0, 22.0]);
+        assert_eq!(arr2.data, vec![101.0, 102.0, 201.0, 202.0]);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_alt_samp_file_rejects_wrong_file_size() {
+        let path = temp_file("snaphu_rs_read_alt_samp_badsize");
+        let mut fp = File::create(&path).unwrap();
+        fp.write_all(&1.0f32.to_ne_bytes()).unwrap();
+        drop(fp);
+
+        let err = read_alt_samp_file(&path, 4, 3, TileWindow::new(0, 0, 1, 1)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("wrong size"));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_alt_samp_file_rejects_out_of_bounds_window() {
+        let path = temp_file("snaphu_rs_read_alt_samp_bounds");
+        let mut fp = File::create(&path).unwrap();
+        for _ in 0..(2 * 3 * 4) {
+            fp.write_all(&0.0f32.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let err = read_alt_samp_file(&path, 4, 3, TileWindow::new(2, 3, 2, 2)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(err.to_string().contains("tile window"));
 
