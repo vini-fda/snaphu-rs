@@ -29,7 +29,7 @@ CheckLeaf,5,DONE
 CheckMagMasking,3,DONE
 CheckParams,1,
 ChildResetStreamPointers,2,DONE
-CleanUpBoundaryNodes,4,
+CleanUpBoundaryNodes,4,DONE
 ClearBuckets,4,DONE
 ClipFlow,4,DONE
 ClosestNode,5,DONE
@@ -39,7 +39,7 @@ cs2mcfparse,5,NOT_PLANNED
 CycleResidue,4,DONE
 Despeckle,5,DONE
 discharge,7,NOT_PLANNED
-DischargeBoundary,4,
+DischargeBoundary,4,DONE
 DischargeTree,4,
 DisplayElapsedTime,2,DONE
 DumpIncrCostFiles,3,DONE
@@ -71,10 +71,10 @@ GrowConnCompsMask,3,
 GrowRegions,3,
 InitBoundary,4,
 InitBuckets,4,DONE
-InitNetwork,3,
+InitNetwork,3,DONE
 InitNodeNums,4,DONE
 InitNodes,4,DONE
-InitTree,4,
+InitTree,4,DONE
 IntegratePhase,4,DONE
 IntegrateSecondaryFlows,3,
 IsFalse,5,DONE
@@ -99,12 +99,12 @@ MaskNodes,3,DONE
 MaskPrespecifiedArcCosts,4,DONE
 MaskSmoothCost,5,DONE
 MaxNonMaskFlow,3,DONE
-MCFInitFlows,3,
+MCFInitFlows,3,DONE
 MergeRegions,4,DONE
 MinOutCostNode,4,DONE
 MirrorPad,6,DONE
 ModDiff,6,DONE
-MSTInitFlows,3,
+MSTInitFlows,3,DONE
 NodeResidue,5,DONE
 NonDegenUpdateChildren,4,
 NonNegDataArray,6,DONE
@@ -117,7 +117,7 @@ price_out,6,NOT_PLANNED
 price_refine,6,NOT_PLANNED
 price_update,7,DONE
 ProcessArgs,1,
-PruneTree,4,
+PruneTree,4,DONE
 Read2DArray,6,DONE
 Read2DRowColFile,5,DONE
 Read2DRowColFileRows,4,DONE
@@ -144,8 +144,8 @@ relabel,8,DONE
 RemoveMean,5,DONE
 RenumberRegion,4,DONE
 ScanRegion,5,DONE
-SelectConnNodeSource,4,
-SelectSources,3,
+SelectConnNodeSource,4,DONE
+SelectSources,3,DONE
 Set2DShortArray,5,DONE
 SetBooleanSignedChar,4,DONE
 SetDefaults,1,
@@ -162,7 +162,7 @@ SetUpDoTileMask,2,DONE
 SetupIncrFlowCosts,3,DONE
 SetUpperEdge,4,
 SetupTile,4,DONE
-SetupTreeSolveNetwork,3,
+SetupTreeSolveNetwork,3,DONE
 SetVerboseOut,1,DONE
 Short2DRowColAbsMax,5,DONE
 SolveCS2,4,

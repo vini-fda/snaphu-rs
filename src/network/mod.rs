@@ -6,6 +6,7 @@ pub mod bucket;
 
 use crate::constants::{GROUNDROW, LARGE_SHORT, MASKED};
 use crate::costs::types::{Cost, IncrCost};
+use crate::data::ops::{cycle_residue, l_round, node_residue, short_2d_row_col_abs_max};
 
 pub struct TileGraph;
 
@@ -1286,10 +1287,718 @@ pub enum NetworkCostError {
         index: usize,
         len: usize,
     },
+    RegionScanFailed,
+    AddNodeFailure(AddNodeError),
+    NetworkDataFailure(NetworkDataError),
+    InvalidNetworkDims {
+        nrow: usize,
+        ncol: usize,
+    },
+    FlowShortCycleOverflow {
+        mostflow: i64,
+        nshortcycle: i64,
+    },
+    InvalidAdjacency {
+        expected: usize,
+        got: usize,
+    },
+    InvalidApexLayout,
+    InvalidCandidateLayout,
+    InvalidSourceIndex {
+        index: usize,
+        len: usize,
+    },
 }
 
 const NOSTAT_INIT_MAX_FLOW: i64 = 15;
 const DEF_INIT_MAX_FLOW: i64 = 9_999;
+const INIT_ARR_SIZE: usize = 500;
+const N_SOURCE_LIST_MEM_INCR: usize = 1024;
+const NEG_BUCKET_FRACTION: f64 = 1.0;
+const POS_BUCKET_FRACTION: f64 = 1.0;
+
+/// Input parameters for network initialization.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NetworkInitParams {
+    pub nrow: usize,
+    pub ncol: usize,
+    pub nshortcycle: i64,
+    pub maxcost: f64,
+    pub has_ground: bool,
+}
+
+/// Runtime state initialized by `init_network`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NetworkInitState {
+    pub ngroundarcs: i64,
+    pub ncycle: i64,
+    pub nflowdone: i64,
+    pub mostflow: i64,
+    pub nflow: i64,
+    pub candidate_bag: Vec<CandidateArc>,
+    pub candidate_list: Vec<CandidateArc>,
+    pub iscandidate: Vec<Vec<bool>>,
+    pub apexes: Vec<Vec<Option<usize>>>,
+    pub buckets: FrontierBuckets,
+    pub iincrcostfile: i64,
+    pub incrcosts: Vec<Vec<IncrCost>>,
+    pub nnoderow: usize,
+    pub nnodes_per_row: Vec<usize>,
+    pub narcrow: usize,
+    pub narcs_per_row: Vec<usize>,
+    pub notfirstloop: bool,
+    pub totalcost: f64,
+}
+
+/// Parameters for connected-source selection (`SelectSources` family).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceSelectionParams {
+    pub nground_arcs: i64,
+    pub nrow: usize,
+    pub ncol: usize,
+    pub nconnnodemin: usize,
+}
+
+/// One accepted source and the size of its connected component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceCandidate {
+    pub node_idx: usize,
+    pub connected_count: usize,
+}
+
+/// Source list produced by `select_sources`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSelection {
+    pub sources: Vec<usize>,
+    pub connected_sizes: Vec<usize>,
+}
+
+/// Grid-arc descriptor used while initializing tree buckets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeArc {
+    pub to: usize,
+    pub arcrow: usize,
+    pub arccol: usize,
+    pub arcdir: i64,
+}
+
+/// Edge walk descriptor for boundary discharge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundaryPathArc {
+    pub node_row: usize,
+    pub node_col: usize,
+    pub arcrow: usize,
+    pub arccol: usize,
+    pub arcdir: i64,
+}
+
+#[inline]
+fn convert_data_error(err: NetworkDataError) -> NetworkCostError {
+    NetworkCostError::NetworkDataFailure(err)
+}
+
+#[inline]
+fn convert_add_node_error(err: AddNodeError) -> NetworkCostError {
+    NetworkCostError::AddNodeFailure(err)
+}
+
+fn flow_row_lengths(nrow: usize, ncol: usize) -> Vec<usize> {
+    let mut widths = Vec::with_capacity(2 * nrow - 1);
+    for row in 0..(2 * nrow - 1) {
+        widths.push(if row < nrow - 1 { ncol } else { ncol - 1 });
+    }
+    widths
+}
+
+fn validate_flow_layout(
+    flows: &[Vec<i16>],
+    nrow: usize,
+    ncol: usize,
+) -> Result<(), NetworkCostError> {
+    let widths = flow_row_lengths(nrow, ncol);
+    if flows.len() != widths.len() {
+        return Err(NetworkCostError::InvalidRowCount {
+            expected: widths.len(),
+            got: flows.len(),
+        });
+    }
+    for (row, (vals, width)) in flows.iter().zip(widths.iter()).enumerate() {
+        if vals.len() != *width {
+            return Err(NetworkCostError::InvalidRowLen {
+                row,
+                expected: *width,
+                got: vals.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn flatten_row_col_layout(flows: &[Vec<i16>], nrow: usize, ncol: usize) -> Vec<i16> {
+    let mut flat = Vec::with_capacity((nrow - 1) * ncol + nrow * (ncol - 1));
+    for row in flows {
+        flat.extend_from_slice(row);
+    }
+    flat
+}
+
+fn cycle_residue_grid(phase: &[f32], nrow: usize, ncol: usize) -> Vec<Vec<i8>> {
+    let flat = cycle_residue(phase, nrow, ncol);
+    let mut out = Vec::with_capacity(nrow - 1);
+    for row in 0..(nrow - 1) {
+        let start = row * (ncol - 1);
+        let end = start + (ncol - 1);
+        out.push(flat[start..end].to_vec());
+    }
+    out
+}
+
+/// Initialize tree-solver runtime buffers and bookkeeping values.
+///
+/// This is the idiomatic Rust equivalent of C `InitNetwork()`.
+pub fn init_network(
+    flows: &mut [Vec<i16>],
+    params: NetworkInitParams,
+) -> Result<NetworkInitState, NetworkCostError> {
+    if params.nrow < 2 || params.ncol < 2 {
+        return Err(NetworkCostError::InvalidNetworkDims {
+            nrow: params.nrow,
+            ncol: params.ncol,
+        });
+    }
+    validate_flow_layout(flows, params.nrow, params.ncol)?;
+
+    if params.has_ground {
+        flows[0][0] = flows[0][0].wrapping_add(flows[params.nrow - 1][0]);
+        flows[params.nrow - 1][0] = 0;
+        flows[0][params.ncol - 1] =
+            flows[0][params.ncol - 1].wrapping_sub(flows[params.nrow - 1][params.ncol - 2]);
+        flows[params.nrow - 1][params.ncol - 2] = 0;
+
+        flows[params.nrow - 2][0] =
+            flows[params.nrow - 2][0].wrapping_sub(flows[2 * params.nrow - 2][0]);
+        flows[2 * params.nrow - 2][0] = 0;
+        flows[params.nrow - 2][params.ncol - 1] = flows[params.nrow - 2][params.ncol - 1]
+            .wrapping_add(flows[2 * params.nrow - 2][params.ncol - 2]);
+        flows[2 * params.nrow - 2][params.ncol - 2] = 0;
+    }
+
+    let flat = flatten_row_col_layout(flows, params.nrow, params.ncol);
+    let mostflow = if params.has_ground {
+        short_2d_row_col_abs_max(&flat, params.nrow, params.ncol)
+    } else {
+        0
+    };
+    if params.has_ground && mostflow.saturating_mul(params.nshortcycle) > i64::from(LARGE_SHORT) {
+        return Err(NetworkCostError::FlowShortCycleOverflow {
+            mostflow,
+            nshortcycle: params.nshortcycle,
+        });
+    }
+
+    let ngroundarcs = if params.has_ground {
+        if params.ncol > 2 {
+            2 * (params.nrow as i64 + params.ncol as i64 - 2) - 4
+        } else {
+            2 * (params.nrow as i64 + params.ncol as i64 - 2) - 2
+        }
+    } else {
+        0
+    };
+
+    let span = if params.has_ground {
+        params.nrow as f64 + params.ncol as f64
+    } else {
+        params.nrow as f64
+    };
+    let minind = -l_round((params.maxcost + 1.0) * span * NEG_BUCKET_FRACTION);
+    let maxind = l_round((params.maxcost + 1.0) * span * POS_BUCKET_FRACTION);
+    let buckets = FrontierBuckets::new(minind, maxind, minind).map_err(convert_add_node_error)?;
+
+    let narcs_per_row = flow_row_lengths(params.nrow, params.ncol);
+    let apexes = if params.has_ground {
+        narcs_per_row.iter().map(|&w| vec![None; w]).collect()
+    } else {
+        Vec::new()
+    };
+    let iscandidate = if params.has_ground {
+        narcs_per_row.iter().map(|&w| vec![false; w]).collect()
+    } else {
+        Vec::new()
+    };
+    let incrcosts = if params.has_ground {
+        narcs_per_row
+            .iter()
+            .map(|&w| vec![IncrCost::default(); w])
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let (nnoderow, nnodes_per_row, narcrow) = if params.has_ground {
+        (
+            params.nrow - 1,
+            vec![params.ncol - 1; params.nrow - 1],
+            2 * params.nrow - 1,
+        )
+    } else {
+        (0, Vec::new(), 0)
+    };
+
+    Ok(NetworkInitState {
+        ngroundarcs,
+        ncycle: 0,
+        nflowdone: 0,
+        mostflow,
+        nflow: 1,
+        candidate_bag: Vec::with_capacity(INIT_ARR_SIZE),
+        candidate_list: Vec::with_capacity(INIT_ARR_SIZE),
+        iscandidate,
+        apexes,
+        buckets,
+        iincrcostfile: 0,
+        incrcosts,
+        nnoderow,
+        nnodes_per_row,
+        narcrow,
+        narcs_per_row,
+        notfirstloop: false,
+        totalcost: crate::constants::LARGE_FLOAT,
+    })
+}
+
+/// Reset node labels and candidate/arc state before each tree solve pass.
+///
+/// This is the idiomatic Rust equivalent of C `SetupTreeSolveNetwork()`.
+pub fn setup_tree_solve_network(
+    nodes: &mut [Vec<TreeNode>],
+    ground: Option<&mut TreeNode>,
+    apexes: &mut [Vec<Option<usize>>],
+    iscandidate: &mut [Vec<bool>],
+    nnodes_per_row: &[usize],
+    narcs_per_row: &[usize],
+    dims: (usize, usize),
+) -> Result<usize, NetworkCostError> {
+    let (nrow, ncol) = dims;
+    if nodes.len() != nnodes_per_row.len() {
+        return Err(NetworkCostError::InvalidRowCount {
+            expected: nnodes_per_row.len(),
+            got: nodes.len(),
+        });
+    }
+    let mut nnodes = 0usize;
+    for (row, row_nodes) in nodes.iter_mut().enumerate() {
+        if row_nodes.len() < nnodes_per_row[row] {
+            return Err(NetworkCostError::InvalidRowLen {
+                row,
+                expected: nnodes_per_row[row],
+                got: row_nodes.len(),
+            });
+        }
+        for node in row_nodes.iter_mut().take(nnodes_per_row[row]) {
+            if node.group != TreeNodeGroup::Masked {
+                node.group = TreeNodeGroup::Normal;
+                nnodes += 1;
+            }
+            node.incost = VERY_FAR;
+            node.outcost = VERY_FAR;
+            node.pred = None;
+        }
+    }
+
+    let has_ground = ground.is_some();
+    if let Some(ground) = ground {
+        if ground.group != TreeNodeGroup::Masked {
+            ground.group = TreeNodeGroup::Normal;
+            nnodes += 1;
+        }
+        ground.incost = VERY_FAR;
+        ground.outcost = VERY_FAR;
+        ground.pred = None;
+    }
+
+    if apexes.len() != narcs_per_row.len() || iscandidate.len() != narcs_per_row.len() {
+        return Err(NetworkCostError::InvalidApexLayout);
+    }
+    for row in 0..narcs_per_row.len() {
+        if apexes[row].len() != narcs_per_row[row] || iscandidate[row].len() != narcs_per_row[row] {
+            return Err(NetworkCostError::InvalidCandidateLayout);
+        }
+        for col in 0..narcs_per_row[row] {
+            apexes[row][col] = None;
+            iscandidate[row][col] = false;
+        }
+    }
+
+    if has_ground {
+        iscandidate[nrow - 1][0] = true;
+        iscandidate[2 * nrow - 2][0] = true;
+        iscandidate[nrow - 1][ncol - 2] = true;
+        iscandidate[2 * nrow - 2][ncol - 2] = true;
+    }
+
+    Ok(nnodes)
+}
+
+/// Select source for one connected component, starting at `start_idx`.
+///
+/// This is the idiomatic Rust equivalent of C `SelectConnNodeSource()`.
+pub fn select_conn_node_source(
+    nodes: &mut [RegionTraversalNode],
+    adjacency: &[Vec<RegionTraversalArc>],
+    mag: Option<&[f32]>,
+    start_idx: usize,
+    params: SourceSelectionParams,
+) -> Result<Option<SourceCandidate>, NetworkCostError> {
+    if start_idx >= nodes.len() {
+        return Err(NetworkCostError::InvalidSourceIndex {
+            index: start_idx,
+            len: nodes.len(),
+        });
+    }
+    if nodes[start_idx].group == MASKED || nodes[start_idx].group == ONTREE_GROUP {
+        return Ok(None);
+    }
+    let nconnected = scan_region(
+        start_idx,
+        nodes,
+        adjacency,
+        mag,
+        params.nground_arcs,
+        params.nrow,
+        params.ncol,
+        ONTREE_GROUP,
+    )
+    .map_err(|_| NetworkCostError::RegionScanFailed)?;
+
+    if nconnected > params.nconnnodemin {
+        Ok(Some(SourceCandidate {
+            node_idx: start_idx,
+            connected_count: nconnected,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Enumerate source nodes for each connected unmasked component.
+///
+/// This is the idiomatic Rust equivalent of C `SelectSources()`.
+pub fn select_sources(
+    nodes: &mut [RegionTraversalNode],
+    adjacency: &[Vec<RegionTraversalArc>],
+    mag: Option<&[f32]>,
+    ground_idx: Option<usize>,
+    params: SourceSelectionParams,
+) -> Result<SourceSelection, NetworkCostError> {
+    if adjacency.len() != nodes.len() {
+        return Err(NetworkCostError::InvalidAdjacency {
+            expected: nodes.len(),
+            got: adjacency.len(),
+        });
+    }
+    for node in nodes.iter_mut() {
+        if node.group != MASKED && node.group != BOUNDARY_PTR_GROUP {
+            node.group = 0;
+        }
+    }
+
+    let mut out = SourceSelection {
+        sources: Vec::with_capacity(N_SOURCE_LIST_MEM_INCR),
+        connected_sizes: Vec::with_capacity(N_SOURCE_LIST_MEM_INCR),
+    };
+
+    if let Some(ground_idx) = ground_idx
+        && let Some(src) = select_conn_node_source(nodes, adjacency, mag, ground_idx, params)?
+    {
+        out.sources.push(src.node_idx);
+        out.connected_sizes.push(src.connected_count);
+    }
+
+    for idx in 0..nodes.len() {
+        if Some(idx) == ground_idx {
+            continue;
+        }
+        if let Some(src) = select_conn_node_source(nodes, adjacency, mag, idx, params)? {
+            out.sources.push(src.node_idx);
+            out.connected_sizes.push(src.connected_count);
+        }
+    }
+
+    for node in nodes.iter_mut() {
+        if node.group != MASKED && node.group != BOUNDARY_PTR_GROUP {
+            node.group = 0;
+        }
+    }
+
+    Ok(out)
+}
+
+/// Initialize one tree root and seed buckets with outgoing candidate nodes.
+///
+/// This is the idiomatic Rust equivalent of C `InitTree()`.
+pub fn init_tree(
+    source_idx: usize,
+    nodes: &mut [TreeNode],
+    adjacency: &[Vec<TreeArc>],
+    buckets: &mut FrontierBuckets,
+    nflow: i64,
+    incrcosts: &[Vec<IncrCost>],
+) -> Result<(), NetworkCostError> {
+    let _ = nflow;
+    if source_idx >= nodes.len() {
+        return Err(NetworkCostError::InvalidNodeIndex {
+            index: source_idx,
+            len: nodes.len(),
+        });
+    }
+    if adjacency.len() != nodes.len() {
+        return Err(NetworkCostError::InvalidAdjacency {
+            expected: nodes.len(),
+            got: adjacency.len(),
+        });
+    }
+
+    let source = &mut nodes[source_idx];
+    source.group = TreeNodeGroup::OnTree;
+    source.outcost = 0;
+    source.incost = 0;
+    source.pred = None;
+    source.level = 0;
+
+    for arc in &adjacency[source_idx] {
+        if arc.to >= nodes.len() {
+            return Err(NetworkCostError::InvalidNodeIndex {
+                index: arc.to,
+                len: nodes.len(),
+            });
+        }
+        if nodes[arc.to].group != TreeNodeGroup::Pruned
+            && nodes[arc.to].group != TreeNodeGroup::Masked
+        {
+            add_new_node(
+                source_idx, arc.to, arc.arcdir, nodes, buckets, incrcosts, arc.arcrow, arc.arccol,
+            )
+            .map_err(convert_add_node_error)?;
+        }
+    }
+    Ok(())
+}
+
+/// Prune tree leaves whose outgoing arcs all satisfy the prune threshold.
+///
+/// This is the idiomatic Rust equivalent of C `PruneTree()`.
+pub fn prune_tree(
+    traversal_order: &[usize],
+    nodes: &mut [TreeNode],
+    leaf_arcs: &[Vec<LeafArcStatus>],
+    prune_cost_thresh: i16,
+) -> Result<usize, NetworkCostError> {
+    if leaf_arcs.len() != nodes.len() {
+        return Err(NetworkCostError::InvalidAdjacency {
+            expected: nodes.len(),
+            got: leaf_arcs.len(),
+        });
+    }
+
+    let mut npruned = 0usize;
+    for (i, &idx) in traversal_order.iter().enumerate().skip(1) {
+        if idx >= nodes.len() {
+            return Err(NetworkCostError::InvalidNodeIndex {
+                index: idx,
+                len: nodes.len(),
+            });
+        }
+        let next_level = if i + 1 < traversal_order.len() {
+            let next_idx = traversal_order[i + 1];
+            if next_idx >= nodes.len() {
+                return Err(NetworkCostError::InvalidNodeIndex {
+                    index: next_idx,
+                    len: nodes.len(),
+                });
+            }
+            nodes[next_idx].level as i32
+        } else {
+            i32::MIN
+        };
+        if check_leaf(
+            nodes[idx].level as i32,
+            next_level,
+            &leaf_arcs[idx],
+            prune_cost_thresh,
+        ) {
+            nodes[idx].group = TreeNodeGroup::Pruned;
+            npruned += 1;
+        }
+    }
+    Ok(npruned)
+}
+
+/// Re-scan a region and restore node mask/group values after boundary setup.
+///
+/// This is the idiomatic Rust equivalent of C `CleanUpBoundaryNodes()`.
+pub fn clean_up_boundary_nodes(
+    source_idx: usize,
+    boundary_neighbor_idx: Option<usize>,
+    non_grid_network: bool,
+    nodes: &mut [RegionTraversalNode],
+    adjacency: &[Vec<RegionTraversalArc>],
+    mag: Option<&[f32]>,
+    params: SourceSelectionParams,
+) -> Result<usize, NetworkCostError> {
+    if non_grid_network {
+        return Ok(0);
+    }
+    if source_idx >= nodes.len() {
+        return Err(NetworkCostError::InvalidSourceIndex {
+            index: source_idx,
+            len: nodes.len(),
+        });
+    }
+
+    let start_idx = if nodes[source_idx].row == BOUNDARY_ROW {
+        boundary_neighbor_idx.unwrap_or(source_idx)
+    } else {
+        source_idx
+    };
+    if start_idx >= nodes.len() {
+        return Err(NetworkCostError::InvalidSourceIndex {
+            index: start_idx,
+            len: nodes.len(),
+        });
+    }
+
+    scan_region(
+        start_idx,
+        nodes,
+        adjacency,
+        mag,
+        params.nground_arcs,
+        params.nrow,
+        params.ncol,
+        0,
+    )
+    .map_err(|_| NetworkCostError::RegionScanFailed)
+}
+
+/// Discharge boundary-node surplus along traced zero-cost boundary arcs.
+///
+/// This is the idiomatic Rust equivalent of C `DischargeBoundary()`.
+pub fn discharge_boundary(
+    flows: &mut [Vec<i16>],
+    boundary_path: &[BoundaryPathArc],
+    wrapped_phase: &[f32],
+    nrow: usize,
+    ncol: usize,
+    enabled: bool,
+) -> Result<usize, NetworkCostError> {
+    if !enabled || boundary_path.is_empty() {
+        return Ok(0);
+    }
+    validate_flow_layout(flows, nrow, ncol)?;
+    if wrapped_phase.len() != nrow * ncol {
+        return Err(NetworkCostError::InvalidRowCount {
+            expected: nrow * ncol,
+            got: wrapped_phase.len(),
+        });
+    }
+
+    let mut nedgenode = 1usize;
+    for step in boundary_path {
+        if step.arcrow >= flows.len() || step.arccol >= flows[step.arcrow].len() {
+            return Err(NetworkCostError::MissingArc {
+                arcrow: step.arcrow,
+                arccol: step.arccol,
+            });
+        }
+        if step.node_row >= nrow - 1 || step.node_col >= ncol - 1 {
+            continue;
+        }
+
+        let surplus = i64::from(flows[step.node_row][step.node_col])
+            - i64::from(flows[step.node_row][step.node_col + 1])
+            + i64::from(flows[step.node_row + nrow - 1][step.node_col])
+            - i64::from(flows[step.node_row + 1 + nrow - 1][step.node_col]);
+        let residue = i64::from(node_residue(
+            wrapped_phase,
+            nrow,
+            ncol,
+            step.node_row,
+            step.node_col,
+        ));
+        let excess = surplus + residue;
+        let updated = i64::from(flows[step.arcrow][step.arccol]) + step.arcdir * excess;
+        let updated = i16::try_from(updated).map_err(|_| {
+            NetworkCostError::NetworkDataFailure(NetworkDataError::FlowOutOfRange {
+                value: updated,
+            })
+        })?;
+        flows[step.arcrow][step.arccol] = updated;
+        nedgenode += 1;
+    }
+    Ok(nedgenode)
+}
+
+/// Initialize flows from wrapped phase residues using an MCF backend.
+///
+/// This is the idiomatic Rust equivalent of C `MCFInitFlows()`.
+pub fn mcf_init_flows<F>(
+    wrapped_phase: &[f32],
+    mstcosts: &[Vec<i16>],
+    nrow: usize,
+    ncol: usize,
+    cs2_scale_factor: i64,
+    mut solve_cs2: F,
+) -> Result<Vec<Vec<i16>>, NetworkCostError>
+where
+    F: FnMut(&[Vec<i8>], &[Vec<i16>], usize, usize, i64) -> Result<Vec<Vec<i16>>, NetworkCostError>,
+{
+    if wrapped_phase.len() != nrow * ncol {
+        return Err(NetworkCostError::InvalidRowCount {
+            expected: nrow * ncol,
+            got: wrapped_phase.len(),
+        });
+    }
+    validate_flow_layout(mstcosts, nrow, ncol)?;
+    let residue = cycle_residue_grid(wrapped_phase, nrow, ncol);
+    let flows = solve_cs2(&residue, mstcosts, nrow, ncol, cs2_scale_factor)?;
+    validate_flow_layout(&flows, nrow, ncol)?;
+    Ok(flows)
+}
+
+/// Initialize flows from wrapped phase using the MST initialization path.
+///
+/// This is the idiomatic Rust equivalent of C `MSTInitFlows()`.
+pub fn mst_init_flows(
+    wrapped_phase: &[f32],
+    mstcosts: &mut [Vec<i16>],
+    nrow: usize,
+    ncol: usize,
+    maxflow: i64,
+) -> Result<Vec<Vec<i16>>, NetworkCostError> {
+    if wrapped_phase.len() != nrow * ncol {
+        return Err(NetworkCostError::InvalidRowCount {
+            expected: nrow * ncol,
+            got: wrapped_phase.len(),
+        });
+    }
+    validate_flow_layout(mstcosts, nrow, ncol)?;
+
+    let mut residue = cycle_residue_grid(wrapped_phase, nrow, ncol);
+    let widths = flow_row_lengths(nrow, ncol);
+    let mut flows: Vec<Vec<i16>> = widths.iter().map(|&w| vec![0i16; w]).collect();
+
+    // Mirror the C loop shape: clip/retry until all flows are within bounds.
+    loop {
+        let done = clip_flow(&mut residue, &mut flows, mstcosts, nrow, ncol, maxflow)
+            .map_err(convert_data_error)?;
+        if done {
+            break;
+        }
+    }
+
+    Ok(flows)
+}
 
 /// Recompute one arc's incremental +/- cost and clip it to `LARGE_SHORT`.
 ///
