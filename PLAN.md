@@ -65,7 +65,9 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
    - ✅ Lookup-table builders `BuildDZRCritLookupTable` and `BuildDZRhoMaxLookupTable` are implemented in `costs::lookup` with typed parameter structs and smoke tests.
    - ✅ Bucket helpers mirroring `BucketInsert/Remove` exist in `network::bucket` with invariants enforced by Rust errors/tests.
    - ✅ Mirror padding (`MirrorPad`) and interpolation helpers (`LinInterp1D/2D`) are available under `data::ops` with regression tests.
-   - Remaining work in this phase: wrapping/flattening helpers (`FlattenWrappedPhase`, `WrapPhase`, etc.), `ModDiff`, `MirrorPad` variants that touch non-f32 types, and any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
+   - ✅ Phase wrapping utilities (`FlattenWrappedPhase`, `WrapPhase`, `ModDiff`) now live in `data::ops`, keeping wrapped values inside `[0, 2π)` and matching the short-cycle behaviour from the C code.
+   - ✅ Wrapped-gradient calculators (`CalcWrappedRangeDiffs/AzDiffs`) have idiomatic equivalents in `costs::gradients`, exposing typed outputs for cost builders and reusing the shared boxcar/mirror-pad helpers.
+   - Remaining work in this phase: mirror padding variants for non-f32 rasters and any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
 3. **Cost builders (Priority 4)**
    - Implement `BuildStatCosts*` in `costs` module, ensuring they only depend on previously translated helpers and `RuntimeState` slices.
    - Provide `CostField` structs to hold per-pixel arrays. Tests should read fixture rasters and verify deterministic bytes vs C output (use small 5×5 samples captured from the original binary).

@@ -2,7 +2,7 @@
 
 //! Standalone numeric helpers translated from the SNAPHU leaf utilities.
 
-use crate::constants::{LARGE_SHORT, LARGE_SHORT_I32};
+use crate::constants::{LARGE_SHORT, LARGE_SHORT_I32, PI, TWO_PI};
 
 /// Adds the values of two 2-D arrays (stored in row-major order) elementwise.
 ///
@@ -137,7 +137,7 @@ where
             (rows + 2 * pad_rows) * (cols + 2 * pad_cols)
         ]);
     }
-    if pad_rows >= rows || pad_cols >= cols {
+    if pad_rows > rows || pad_cols > cols {
         return None;
     }
 
@@ -254,9 +254,56 @@ pub fn lin_interp_2d(arr: &[f32], rows: usize, cols: usize, row_idx: f64, col_id
     ((1.0_f32 - frac) * lower + frac * upper) / 2.0
 }
 
+/// Subtracts the estimated unwrapped phase from the wrapped field and re-wraps
+/// each sample into the `[0, 2π)` range.
+pub fn flatten_wrapped_phase(
+    wrapped_phase: &mut [f32],
+    unwrapped_estimate: &[f32],
+    rows: usize,
+    cols: usize,
+) {
+    let total = rows
+        .checked_mul(cols)
+        .expect("rows*cols would overflow when validating array lengths");
+    assert_eq!(wrapped_phase.len(), total, "wrapped phase length mismatch");
+    assert_eq!(
+        unwrapped_estimate.len(),
+        total,
+        "unwrapped estimate length mismatch",
+    );
+
+    for (wrapped, estimate) in wrapped_phase.iter_mut().zip(unwrapped_estimate.iter()) {
+        let flattened = (*wrapped as f64 - *estimate as f64).rem_euclid(TWO_PI);
+        *wrapped = flattened as f32;
+    }
+}
+
+/// Wraps every sample back into the `[0, 2π)` interval.
+pub fn wrap_phase(field: &mut [f32], rows: usize, cols: usize) {
+    let total = rows
+        .checked_mul(cols)
+        .expect("rows*cols would overflow when validating array length");
+    assert_eq!(field.len(), total, "phase field length mismatch");
+    for value in field.iter_mut() {
+        *value = (*value as f64).rem_euclid(TWO_PI) as f32;
+    }
+}
+
+/// Computes the difference between `f1` and `f2` wrapped into `(-π, π]`.
+pub fn mod_diff(f1: f64, f2: f64) -> f64 {
+    let mut diff = f1 - f2;
+    if diff > PI {
+        diff -= TWO_PI;
+    } else if diff <= -PI {
+        diff += TWO_PI;
+    }
+    diff
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::TWO_PI_F32;
 
     #[test]
     fn add_2d_arrays_adds_elementwise() {
@@ -328,7 +375,7 @@ mod tests {
     #[test]
     fn mirror_pad_rejects_large_padding() {
         let data = vec![0.0f32; 4];
-        assert!(mirror_pad(&data, 2, 2, 2, 1).is_none());
+        assert!(mirror_pad(&data, 2, 2, 3, 1).is_none());
     }
 
     #[test]
@@ -350,5 +397,39 @@ mod tests {
         assert!((val - expected).abs() < 1e-6);
         assert_eq!(lin_interp_2d(&arr, 3, 3, -1.0, 0.0), 0.0);
         assert_eq!(lin_interp_2d(&arr, 3, 3, 10.0, 2.0), 22.0);
+    }
+
+    #[test]
+    fn flatten_wrapped_phase_rewraps_relative_to_estimate() {
+        let mut wrapped = vec![0.0f32, 3.0, -1.0, 9.0];
+        let unwrapped = vec![1.0f32, 1.5, -5.0, 4.0];
+        flatten_wrapped_phase(&mut wrapped, &unwrapped, 2, 2);
+        let expected = vec![
+            TWO_PI_F32 - 1.0,
+            1.5,
+            4.0,
+            (9.0f32 - 4.0f32).rem_euclid(TWO_PI_F32),
+        ];
+        for (got, want) in wrapped.iter().zip(expected.iter()) {
+            let diff = (*got - *want).abs();
+            assert!(diff < 1e-5, "{} vs {}", got, want);
+        }
+    }
+
+    #[test]
+    fn wrap_phase_normalizes_values() {
+        let mut field = vec![-3.0 * std::f32::consts::PI, 0.0, 5.0 * std::f32::consts::PI];
+        wrap_phase(&mut field, 3, 1);
+        assert!(field[0] >= 0.0 && field[0] < TWO_PI_F32);
+        assert_eq!(field[1], 0.0);
+        assert!((field[2] - std::f32::consts::PI).abs() < 1e-5);
+    }
+
+    #[test]
+    fn mod_diff_matches_expected_range() {
+        let diff = mod_diff(3.0 * std::f64::consts::PI, 0.0);
+        assert!((diff - std::f64::consts::PI).abs() < 1e-12);
+        let diff = mod_diff(-3.5 * std::f64::consts::PI, 0.0);
+        assert!((diff + 1.5 * std::f64::consts::PI).abs() < 1e-12);
     }
 }

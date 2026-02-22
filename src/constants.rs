@@ -19,3 +19,12 @@ pub const BIGGEST_DZ_RHO_MAX: f64 = 10_000.0;
 
 /// Square root of 1/2, reused when converting between angles.
 pub const SQRT_HALF: f64 = std::f64::consts::FRAC_1_SQRT_2;
+
+/// π constant mirrored from the original C globals.
+pub const PI: f64 = std::f64::consts::PI;
+
+/// Two-π constant reused when wrapping phase values.
+pub const TWO_PI: f64 = std::f64::consts::TAU;
+
+/// Two-π as `f32`, avoiding repeated casts in tight loops.
+pub const TWO_PI_F32: f32 = std::f32::consts::TAU;
