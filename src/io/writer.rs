@@ -2,6 +2,7 @@
 
 //! Output helpers for unwrapped phase products.
 
+use crate::costs::types::IncrCost;
 use crate::data::raster::Raster;
 use crate::io::reader::parse_filename;
 use std::fs::File;
@@ -19,6 +20,8 @@ const DUMP_MSTCOLCOSTFILE: &str = "snaphu.mstcolcost";
 const DUMP_MSTCOSTSFILE: &str = "snaphu.mstcosts";
 const DUMP_CORRDUMPFILE: &str = "snaphu.corr";
 const DUMP_RAWCORRDUMPFILE: &str = "snaphu.rawcorr";
+const INCRCOSTFILEPOS: &str = "snaphu.incrcostpos";
+const INCRCOSTFILENEG: &str = "snaphu.incrcostneg";
 
 #[derive(Debug)]
 pub struct OpenedOutputFile {
@@ -167,6 +170,93 @@ pub fn write_output_file(
             )
         }
     }
+}
+
+/// Output filenames produced by [`dump_incr_cost_files`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncrCostDumpPaths {
+    pub poscost_file: PathBuf,
+    pub negcost_file: PathBuf,
+}
+
+/// Dump positive/negative incremental arc costs into two row/col-packed files.
+///
+/// This is the idiomatic Rust equivalent of C `DumpIncrCostFiles()`.
+pub fn dump_incr_cost_files(
+    incrcosts: &[Vec<IncrCost>],
+    iincrcostfile: i64,
+    nflow: i64,
+    nrow: usize,
+    ncol: usize,
+    output_dir: Option<&Path>,
+) -> io::Result<IncrCostDumpPaths> {
+    if nrow < 1 || ncol < 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "nrow and ncol must be at least 1",
+        ));
+    }
+    let expected_rows = 2 * nrow - 1;
+    if incrcosts.len() != expected_rows {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "incrcost row count does not match row/col arc layout",
+        ));
+    }
+
+    let mut pos_row = Vec::with_capacity((nrow - 1) * ncol);
+    let mut pos_col = Vec::with_capacity(nrow * (ncol - 1));
+    let mut neg_row = Vec::with_capacity((nrow - 1) * ncol);
+    let mut neg_col = Vec::with_capacity(nrow * (ncol - 1));
+
+    for (arcrow, row) in incrcosts.iter().enumerate() {
+        let maxcol = if arcrow < nrow - 1 { ncol } else { ncol - 1 };
+        if row.len() != maxcol {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "incrcost row {} has {} columns; expected {}",
+                    arcrow,
+                    row.len(),
+                    maxcol
+                ),
+            ));
+        }
+        for cost in row {
+            if arcrow < nrow - 1 {
+                pos_row.push(cost.poscost);
+                neg_row.push(cost.negcost);
+            } else {
+                pos_col.push(cost.poscost);
+                neg_col.push(cost.negcost);
+            }
+        }
+    }
+
+    let pos_name = format!("{INCRCOSTFILEPOS}.{iincrcostfile}_{nflow}");
+    let neg_name = format!("{INCRCOSTFILENEG}.{iincrcostfile}_{nflow}");
+    let pos_path = output_dir
+        .map(|dir| dir.join(&pos_name))
+        .unwrap_or_else(|| PathBuf::from(&pos_name));
+    let neg_path = output_dir
+        .map(|dir| dir.join(&neg_name))
+        .unwrap_or_else(|| PathBuf::from(&neg_name));
+
+    let pos_written = write_2d_row_col_array(
+        &Raster::new(ncol, nrow - 1, pos_row),
+        &Raster::new(ncol - 1, nrow, pos_col),
+        &pos_path,
+    )?;
+    let neg_written = write_2d_row_col_array(
+        &Raster::new(ncol, nrow - 1, neg_row),
+        &Raster::new(ncol - 1, nrow, neg_col),
+        &neg_path,
+    )?;
+
+    Ok(IncrCostDumpPaths {
+        poscost_file: pos_written,
+        negcost_file: neg_written,
+    })
 }
 
 /// File-format values accepted by C `LogFileFormat()`.
@@ -610,5 +700,38 @@ mod tests {
         let err = write_2d_row_col_array(&row_arcs, &col_arcs, &path).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(err.to_string().contains("inconsistent"));
+    }
+
+    #[test]
+    fn dump_incr_cost_files_writes_pos_and_neg_rowcol_files() {
+        let dir = std::env::temp_dir().join(format!("snaphu_dump_incr_{}", unique_suffix()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let incr = vec![
+            vec![
+                IncrCost::new(10, -10),
+                IncrCost::new(11, -11),
+                IncrCost::new(12, -12),
+            ],
+            vec![IncrCost::new(20, -20), IncrCost::new(21, -21)],
+            vec![IncrCost::new(30, -30), IncrCost::new(31, -31)],
+        ];
+
+        let out = dump_incr_cost_files(&incr, 7, 3, 2, 3, Some(&dir)).unwrap();
+        assert!(out.poscost_file.exists());
+        assert!(out.negcost_file.exists());
+
+        let window = TileWindow::new(0, 0, 2, 3);
+        let pos = read_2d_row_col_file::<i16>(&out.poscost_file, 3, 2, window).unwrap();
+        let neg = read_2d_row_col_file::<i16>(&out.negcost_file, 3, 2, window).unwrap();
+
+        assert_eq!(pos.row_arcs.data, vec![10, 11, 12]);
+        assert_eq!(pos.col_arcs.data, vec![20, 21, 30, 31]);
+        assert_eq!(neg.row_arcs.data, vec![-10, -11, -12]);
+        assert_eq!(neg.col_arcs.data, vec![-20, -21, -30, -31]);
+
+        fs::remove_file(&out.poscost_file).unwrap();
+        fs::remove_file(&out.negcost_file).unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 }

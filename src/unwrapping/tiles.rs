@@ -8,6 +8,7 @@
 use crate::data::ops::l_round;
 use crate::data::tile::TileRegion;
 use crate::io::reader::parse_filename;
+use crate::io::writer::OutputFileFormat;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
@@ -19,6 +20,8 @@ const ZERO_COST_ARC: i64 = -LARGE_INT;
 const MAX_OFFSET_REFINEMENTS: usize = 64;
 const TMP_TILE_DIR_ROOT: &str = "snaphu_tiles_";
 const TILE_INIT_FILE_ROOT: &str = "snaphu_tileinit_";
+const TMP_TILE_ROOT: &str = "tmptile_";
+const TMP_TILE_COST_SUFFIX: &str = "cost_";
 
 /// Tile-grid parameters needed to compute non-overlapping read windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +30,317 @@ pub struct TileReadSettings {
     pub col_overlap: usize,
     pub ntilerow: usize,
     pub ntilecol: usize,
+}
+
+/// Parameters required to set up one tile run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileSetupParams {
+    pub ntilerow: usize,
+    pub ntilecol: usize,
+    pub rowovrlp: usize,
+    pub colovrlp: usize,
+    pub minregionsize: usize,
+    pub tiledir: PathBuf,
+}
+
+/// Output file configuration (global or per-tile).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileOutputFiles {
+    pub outfile: PathBuf,
+    pub initfile: Option<PathBuf>,
+    pub flowfile: Option<PathBuf>,
+    pub eifile: Option<PathBuf>,
+    pub rowcostfile: Option<PathBuf>,
+    pub colcostfile: Option<PathBuf>,
+    pub mstrowcostfile: Option<PathBuf>,
+    pub mstcolcostfile: Option<PathBuf>,
+    pub mstcostsfile: Option<PathBuf>,
+    pub corrdumpfile: Option<PathBuf>,
+    pub rawcorrdumpfile: Option<PathBuf>,
+    pub conncompfile: Option<PathBuf>,
+    pub costoutfile: Option<PathBuf>,
+    pub logfile: Option<PathBuf>,
+    pub outfile_format: OutputFileFormat,
+}
+
+impl Default for TileOutputFiles {
+    fn default() -> Self {
+        Self {
+            outfile: PathBuf::new(),
+            initfile: None,
+            flowfile: None,
+            eifile: None,
+            rowcostfile: None,
+            colcostfile: None,
+            mstrowcostfile: None,
+            mstcolcostfile: None,
+            mstcostsfile: None,
+            corrdumpfile: None,
+            rawcorrdumpfile: None,
+            conncompfile: None,
+            costoutfile: None,
+            logfile: None,
+            outfile_format: OutputFileFormat::Unknown,
+        }
+    }
+}
+
+/// Result bundle from `setup_tile()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileSetupResult {
+    pub tile_region: TileRegion,
+    pub tile_outfiles: TileOutputFiles,
+}
+
+/// Node coordinate in a tile connectivity grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileNodeCoord {
+    pub row: usize,
+    pub col: usize,
+}
+
+/// Inputs for `find_num_paths_out()`.
+#[derive(Debug, Clone)]
+pub struct FindNumPathsOutInputs<'a> {
+    pub ntilerow: usize,
+    pub ntilecol: usize,
+    pub tilerow: usize,
+    pub tilecol: usize,
+    pub nnrow: usize,
+    pub nncol: usize,
+    pub prevncol: usize,
+    pub regions: &'a [Vec<i16>],
+    pub nextregions: &'a [Vec<i16>],
+    pub lastregions: &'a [Vec<i16>],
+    pub regionsabove: &'a [i16],
+    pub regionsbelow: &'a [i16],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindNumPathsOutError {
+    InvalidNode,
+    InvalidShape,
+}
+
+/// Set up tile geometry and per-tile output filenames.
+///
+/// This is the idiomatic Rust equivalent of C `SetupTile()`.
+pub fn setup_tile(
+    nlines: usize,
+    linelen: usize,
+    params: &TileSetupParams,
+    outfiles: &TileOutputFiles,
+    tilerow: usize,
+    tilecol: usize,
+) -> io::Result<TileSetupResult> {
+    if params.ntilerow == 0 || params.ntilecol == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "tile grid dimensions must be non-zero",
+        ));
+    }
+    let ni = (nlines + (params.ntilerow - 1) * params.rowovrlp).div_ceil(params.ntilerow);
+    let nj = (linelen + (params.ntilecol - 1) * params.colovrlp).div_ceil(params.ntilecol);
+
+    let first_row = tilerow.saturating_mul(ni.saturating_sub(params.rowovrlp));
+    let first_col = tilecol.saturating_mul(nj.saturating_sub(params.colovrlp));
+    let tile_nrow = if tilerow == params.ntilerow - 1 {
+        nlines.saturating_sub((params.ntilerow - 1) * (ni.saturating_sub(params.rowovrlp)))
+    } else {
+        ni
+    };
+    let tile_ncol = if tilecol == params.ntilecol - 1 {
+        linelen.saturating_sub((params.ntilecol - 1) * (nj.saturating_sub(params.colovrlp)))
+    } else {
+        nj
+    };
+
+    if params.minregionsize > tile_nrow.saturating_mul(tile_ncol) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "minimum region size cannot exceed tile size",
+        ));
+    }
+
+    let suffix = format!("_{tilerow}_{tilecol}.{tile_ncol}");
+    let map_named = |base: &Path| -> io::Result<PathBuf> {
+        let (_, basename) = parse_filename(base)?;
+        Ok(params.tiledir.join(format!(
+            "{TMP_TILE_ROOT}{}{}",
+            basename.to_string_lossy(),
+            suffix
+        )))
+    };
+
+    let tile_outfiles = TileOutputFiles {
+        outfile: map_named(&outfiles.outfile)?,
+        initfile: outfiles.initfile.as_deref().map(map_named).transpose()?,
+        flowfile: outfiles.flowfile.as_deref().map(map_named).transpose()?,
+        eifile: outfiles.eifile.as_deref().map(map_named).transpose()?,
+        rowcostfile: outfiles.rowcostfile.as_deref().map(map_named).transpose()?,
+        colcostfile: outfiles.colcostfile.as_deref().map(map_named).transpose()?,
+        mstrowcostfile: outfiles
+            .mstrowcostfile
+            .as_deref()
+            .map(map_named)
+            .transpose()?,
+        mstcolcostfile: outfiles
+            .mstcolcostfile
+            .as_deref()
+            .map(map_named)
+            .transpose()?,
+        mstcostsfile: outfiles
+            .mstcostsfile
+            .as_deref()
+            .map(map_named)
+            .transpose()?,
+        corrdumpfile: outfiles
+            .corrdumpfile
+            .as_deref()
+            .map(map_named)
+            .transpose()?,
+        rawcorrdumpfile: outfiles
+            .rawcorrdumpfile
+            .as_deref()
+            .map(map_named)
+            .transpose()?,
+        conncompfile: outfiles
+            .conncompfile
+            .as_deref()
+            .map(map_named)
+            .transpose()?,
+        costoutfile: match outfiles.costoutfile.as_deref() {
+            Some(path) => Some(map_named(path)?),
+            None => Some(params.tiledir.join(format!(
+                "{TMP_TILE_ROOT}{TMP_TILE_COST_SUFFIX}{tilerow}_{tilecol}.{tile_ncol}"
+            ))),
+        },
+        logfile: outfiles.logfile.as_deref().map(map_named).transpose()?,
+        outfile_format: OutputFileFormat::AltLineData,
+    };
+
+    Ok(TileSetupResult {
+        tile_region: TileRegion::new(first_row, first_col, tile_nrow, tile_ncol),
+        tile_outfiles,
+    })
+}
+
+/// Count how many outgoing paths from a node cross region boundaries.
+///
+/// This is the idiomatic Rust equivalent of C `FindNumPathsOut()`.
+pub fn find_num_paths_out(
+    from: TileNodeCoord,
+    inputs: &FindNumPathsOutInputs<'_>,
+) -> Result<usize, FindNumPathsOutError> {
+    let fromrow = from.row;
+    let fromcol = from.col;
+    let nnrow = inputs.nnrow;
+    let nncol = inputs.nncol;
+    if fromrow >= nnrow || fromcol >= nncol {
+        return Err(FindNumPathsOutError::InvalidNode);
+    }
+
+    let get_regions = |r: usize, c: usize| -> Result<i16, FindNumPathsOutError> {
+        inputs
+            .regions
+            .get(r)
+            .and_then(|row| row.get(c))
+            .copied()
+            .ok_or(FindNumPathsOutError::InvalidShape)
+    };
+    let get_next = |r: usize, c: usize| -> Result<i16, FindNumPathsOutError> {
+        inputs
+            .nextregions
+            .get(r)
+            .and_then(|row| row.get(c))
+            .copied()
+            .ok_or(FindNumPathsOutError::InvalidShape)
+    };
+    let get_last = |r: usize, c: usize| -> Result<i16, FindNumPathsOutError> {
+        inputs
+            .lastregions
+            .get(r)
+            .and_then(|row| row.get(c))
+            .copied()
+            .ok_or(FindNumPathsOutError::InvalidShape)
+    };
+    let get_above = |c: usize| -> Result<i16, FindNumPathsOutError> {
+        inputs
+            .regionsabove
+            .get(c)
+            .copied()
+            .ok_or(FindNumPathsOutError::InvalidShape)
+    };
+    let get_below = |c: usize| -> Result<i16, FindNumPathsOutError> {
+        inputs
+            .regionsbelow
+            .get(c)
+            .copied()
+            .ok_or(FindNumPathsOutError::InvalidShape)
+    };
+
+    let mut npathsout = 0usize;
+
+    if fromcol != nncol - 1 {
+        if fromrow == 0
+            || fromrow == nnrow - 1
+            || get_regions(fromrow - 1, fromcol)? != get_regions(fromrow, fromcol)?
+        {
+            npathsout += 1;
+        }
+    } else if fromrow == 0
+        || fromrow == nnrow - 1
+        || (inputs.tilecol != inputs.ntilecol - 1
+            && get_next(fromrow - 1, 0)? != get_next(fromrow, 0)?)
+    {
+        npathsout += 1;
+    }
+
+    if fromrow != nnrow - 1 {
+        if fromcol == 0
+            || fromcol == nncol - 1
+            || get_regions(fromrow, fromcol)? != get_regions(fromrow, fromcol - 1)?
+        {
+            npathsout += 1;
+        }
+    } else if fromcol == 0
+        || fromcol == nncol - 1
+        || (inputs.tilerow != inputs.ntilerow - 1 && get_below(fromcol)? != get_below(fromcol - 1)?)
+    {
+        npathsout += 1;
+    }
+
+    if fromcol != 0 {
+        if fromrow == 0
+            || fromrow == nnrow - 1
+            || get_regions(fromrow, fromcol - 1)? != get_regions(fromrow - 1, fromcol - 1)?
+        {
+            npathsout += 1;
+        }
+    } else if fromrow == 0
+        || fromrow == nnrow - 1
+        || (inputs.tilecol != 0
+            && get_last(fromrow, inputs.prevncol - 1)?
+                != get_last(fromrow - 1, inputs.prevncol - 1)?)
+    {
+        npathsout += 1;
+    }
+
+    if fromrow != 0 {
+        if fromcol == 0
+            || fromcol == nncol - 1
+            || get_regions(fromrow - 1, fromcol - 1)? != get_regions(fromrow - 1, fromcol)?
+        {
+            npathsout += 1;
+        }
+    } else if fromcol == 0
+        || fromcol == nncol - 1
+        || (inputs.tilerow != 0 && get_above(fromcol - 1)? != get_above(fromcol)?)
+    {
+        npathsout += 1;
+    }
+
+    Ok(npathsout)
 }
 
 /// Create a temporary directory used for tile artifacts.
@@ -829,5 +1143,90 @@ mod tests {
             loop_skip.outcome,
             TraceSecondaryArcOutcome::IgnoredLoop
         ));
+    }
+
+    #[test]
+    fn setup_tile_builds_expected_tile_geometry_and_names() {
+        let params = TileSetupParams {
+            ntilerow: 2,
+            ntilecol: 2,
+            rowovrlp: 2,
+            colovrlp: 2,
+            minregionsize: 1,
+            tiledir: PathBuf::from("/tmp/snaphu_tiles"),
+        };
+        let outfiles = TileOutputFiles {
+            outfile: PathBuf::from("/data/out.bin"),
+            initfile: Some(PathBuf::from("/data/init.bin")),
+            costoutfile: None,
+            ..TileOutputFiles::default()
+        };
+
+        let setup = setup_tile(10, 8, &params, &outfiles, 0, 1).unwrap();
+        assert_eq!(setup.tile_region.first_row, 0);
+        assert_eq!(setup.tile_region.first_col, 3);
+        assert_eq!(setup.tile_region.rows, 6);
+        assert_eq!(setup.tile_region.cols, 5);
+        assert_eq!(
+            setup.tile_outfiles.outfile,
+            PathBuf::from("/tmp/snaphu_tiles/tmptile_out.bin_0_1.5")
+        );
+        assert_eq!(
+            setup.tile_outfiles.initfile,
+            Some(PathBuf::from("/tmp/snaphu_tiles/tmptile_init.bin_0_1.5"))
+        );
+        assert_eq!(
+            setup.tile_outfiles.costoutfile,
+            Some(PathBuf::from("/tmp/snaphu_tiles/tmptile_cost_0_1.5"))
+        );
+        assert_eq!(
+            setup.tile_outfiles.outfile_format,
+            OutputFileFormat::AltLineData
+        );
+    }
+
+    #[test]
+    fn setup_tile_rejects_too_large_min_region_size() {
+        let params = TileSetupParams {
+            ntilerow: 1,
+            ntilecol: 1,
+            rowovrlp: 0,
+            colovrlp: 0,
+            minregionsize: 100,
+            tiledir: PathBuf::from("/tmp/snaphu_tiles"),
+        };
+        let outfiles = TileOutputFiles {
+            outfile: PathBuf::from("/data/out.bin"),
+            ..TileOutputFiles::default()
+        };
+        let err = setup_tile(3, 3, &params, &outfiles, 0, 0).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn find_num_paths_out_matches_boundary_and_interior_cases() {
+        let regions = vec![vec![1i16; 3]; 3];
+        let neighbors = vec![vec![1i16; 3]; 3];
+        let edge = vec![1i16; 3];
+        let ctx = FindNumPathsOutInputs {
+            ntilerow: 2,
+            ntilecol: 2,
+            tilerow: 0,
+            tilecol: 0,
+            nnrow: 3,
+            nncol: 3,
+            prevncol: 3,
+            regions: &regions,
+            nextregions: &neighbors,
+            lastregions: &neighbors,
+            regionsabove: &edge,
+            regionsbelow: &edge,
+        };
+
+        let boundary_paths = find_num_paths_out(TileNodeCoord { row: 0, col: 0 }, &ctx).unwrap();
+        assert_eq!(boundary_paths, 4);
+
+        let interior_paths = find_num_paths_out(TileNodeCoord { row: 1, col: 1 }, &ctx).unwrap();
+        assert_eq!(interior_paths, 0);
     }
 }

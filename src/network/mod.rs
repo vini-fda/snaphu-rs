@@ -5,7 +5,7 @@
 pub mod bucket;
 
 use crate::constants::{GROUNDROW, LARGE_SHORT, MASKED};
-use crate::costs::types::IncrCost;
+use crate::costs::types::{Cost, IncrCost};
 
 pub struct TileGraph;
 
@@ -1211,6 +1211,492 @@ pub fn get_arc_num_lims(
     })
 }
 
+/// Cost-mode selector used by `calc_init_max_flow()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostMode {
+    NoStatCosts,
+    Topo,
+    Defo,
+    Smooth,
+}
+
+/// Parameters required by `calc_init_max_flow()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitMaxFlowParams {
+    pub initmaxflow: i64,
+    pub costmode: CostMode,
+    pub nshortcycle: i64,
+    pub arcmaxflowconst: i64,
+}
+
+/// Candidate entering-arc metadata (`CheckArcReducedCost` equivalent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CandidateArc {
+    pub violation: i64,
+    pub from: usize,
+    pub to: usize,
+    pub arcrow: usize,
+    pub arccol: usize,
+    pub arcdir: i64,
+}
+
+/// Summary stats returned by `setup_incr_flow_costs()`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SetupIncrFlowCostsResult {
+    pub narcs: usize,
+    pub clipped_cost_count: usize,
+    pub clipped_fraction: f64,
+}
+
+/// Errors from translated network-cost helpers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetworkCostError {
+    InvalidNodeIndex {
+        index: usize,
+        len: usize,
+    },
+    MissingArc {
+        arcrow: usize,
+        arccol: usize,
+    },
+    InvalidRowCount {
+        expected: usize,
+        got: usize,
+    },
+    InvalidRowLen {
+        row: usize,
+        expected: usize,
+        got: usize,
+    },
+    MissingNarcsPerRow,
+    InvalidNShortCycle {
+        nshortcycle: i64,
+    },
+    MissingCostArray,
+    InvalidRegionGrid,
+    InvalidRegionSource {
+        row: usize,
+        col: usize,
+    },
+    InvalidRegionSizeIndex {
+        index: usize,
+        len: usize,
+    },
+}
+
+const NOSTAT_INIT_MAX_FLOW: i64 = 15;
+const DEF_INIT_MAX_FLOW: i64 = 9_999;
+
+/// Recompute one arc's incremental +/- cost and clip it to `LARGE_SHORT`.
+///
+/// This is the idiomatic Rust equivalent of C `ReCalcCost()`.
+pub fn recalc_cost<F>(
+    incrcosts: &mut [Vec<IncrCost>],
+    flow: i64,
+    arcrow: usize,
+    arccol: usize,
+    nflow: i64,
+    nrow: usize,
+    mut calc_cost: F,
+) -> Result<usize, NetworkCostError>
+where
+    F: FnMut(i64, usize, usize, i64, usize) -> (i64, i64),
+{
+    let row = incrcosts
+        .get_mut(arcrow)
+        .ok_or(NetworkCostError::MissingArc { arcrow, arccol })?;
+    let arc = row
+        .get_mut(arccol)
+        .ok_or(NetworkCostError::MissingArc { arcrow, arccol })?;
+
+    let (poscost, negcost) = calc_cost(flow, arcrow, arccol, nflow, nrow);
+
+    let mut clipped = 0usize;
+    if poscost > i64::from(LARGE_SHORT) {
+        arc.poscost = LARGE_SHORT;
+        clipped += 1;
+    } else if poscost < -i64::from(LARGE_SHORT) {
+        arc.poscost = -LARGE_SHORT;
+        clipped += 1;
+    } else {
+        arc.poscost = poscost as i16;
+    }
+
+    if negcost > i64::from(LARGE_SHORT) {
+        arc.negcost = LARGE_SHORT;
+        clipped += 1;
+    } else if negcost < -i64::from(LARGE_SHORT) {
+        arc.negcost = -LARGE_SHORT;
+        clipped += 1;
+    } else {
+        arc.negcost = negcost as i16;
+    }
+
+    Ok(clipped)
+}
+
+/// Recompute incremental costs for all arcs using the current flow field.
+///
+/// This is the idiomatic Rust equivalent of C `SetupIncrFlowCosts()`.
+pub fn setup_incr_flow_costs<F>(
+    incrcosts: &mut [Vec<IncrCost>],
+    flows: &[Vec<i16>],
+    nflow: i64,
+    nrow: usize,
+    narcs_per_row: &[usize],
+    mut calc_cost: F,
+) -> Result<SetupIncrFlowCostsResult, NetworkCostError>
+where
+    F: FnMut(i64, usize, usize, i64, usize) -> (i64, i64),
+{
+    if incrcosts.len() != narcs_per_row.len() || flows.len() != narcs_per_row.len() {
+        return Err(NetworkCostError::InvalidRowCount {
+            expected: narcs_per_row.len(),
+            got: incrcosts.len().max(flows.len()),
+        });
+    }
+
+    let mut narcs = 0usize;
+    let mut clipped_cost_count = 0usize;
+    for arcrow in 0..narcs_per_row.len() {
+        let expected = narcs_per_row[arcrow];
+        if incrcosts[arcrow].len() != expected {
+            return Err(NetworkCostError::InvalidRowLen {
+                row: arcrow,
+                expected,
+                got: incrcosts[arcrow].len(),
+            });
+        }
+        if flows[arcrow].len() != expected {
+            return Err(NetworkCostError::InvalidRowLen {
+                row: arcrow,
+                expected,
+                got: flows[arcrow].len(),
+            });
+        }
+        narcs += expected;
+        for arccol in 0..expected {
+            clipped_cost_count += recalc_cost(
+                incrcosts,
+                i64::from(flows[arcrow][arccol]),
+                arcrow,
+                arccol,
+                nflow,
+                nrow,
+                &mut calc_cost,
+            )?;
+        }
+    }
+
+    let clipped_fraction = if narcs == 0 {
+        0.0
+    } else {
+        clipped_cost_count as f64 / (2.0 * narcs as f64)
+    };
+    Ok(SetupIncrFlowCostsResult {
+        narcs,
+        clipped_cost_count,
+        clipped_fraction,
+    })
+}
+
+/// Evaluate the total flow cost by summing arc costs row-by-row.
+///
+/// This is the idiomatic Rust equivalent of C `EvaluateTotalCost()`.
+pub fn evaluate_total_cost<F>(
+    flows: &[Vec<i16>],
+    nrow: usize,
+    ncol: Option<usize>,
+    narcs_per_row: Option<&[usize]>,
+    mut eval_cost: F,
+) -> Result<f64, NetworkCostError>
+where
+    F: FnMut(&[Vec<i16>], usize, usize, usize) -> f64,
+{
+    let (maxrow, row_width) = if let Some(ncol) = ncol {
+        (
+            2 * nrow - 1,
+            Box::new(move |row: usize| if row < nrow - 1 { ncol } else { ncol - 1 })
+                as Box<dyn Fn(usize) -> usize>,
+        )
+    } else {
+        let narcs_per_row = narcs_per_row.ok_or(NetworkCostError::MissingNarcsPerRow)?;
+        if narcs_per_row.len() != nrow {
+            return Err(NetworkCostError::InvalidRowCount {
+                expected: nrow,
+                got: narcs_per_row.len(),
+            });
+        }
+        (
+            nrow,
+            Box::new(move |row: usize| narcs_per_row[row]) as Box<dyn Fn(usize) -> usize>,
+        )
+    };
+
+    if flows.len() != maxrow {
+        return Err(NetworkCostError::InvalidRowCount {
+            expected: maxrow,
+            got: flows.len(),
+        });
+    }
+
+    let mut total = 0.0f64;
+    for row in 0..maxrow {
+        let maxcol = row_width(row);
+        if flows[row].len() != maxcol {
+            return Err(NetworkCostError::InvalidRowLen {
+                row,
+                expected: maxcol,
+                got: flows[row].len(),
+            });
+        }
+        let mut rowcost = 0.0;
+        for col in 0..maxcol {
+            rowcost += eval_cost(flows, row, col, nrow);
+        }
+        total += rowcost;
+    }
+    Ok(total)
+}
+
+/// Compute initialization max-flow bounds from statistical cost metadata.
+///
+/// This is the idiomatic Rust equivalent of C `CalcInitMaxFlow()`.
+pub fn calc_init_max_flow(
+    params: &mut InitMaxFlowParams,
+    costs: Option<&[Vec<Cost>]>,
+    nrow: usize,
+    ncol: usize,
+) -> Result<(), NetworkCostError> {
+    if params.initmaxflow > 0 {
+        return Ok(());
+    }
+
+    match params.costmode {
+        CostMode::NoStatCosts => {
+            params.initmaxflow = NOSTAT_INIT_MAX_FLOW;
+            Ok(())
+        }
+        CostMode::Topo | CostMode::Defo => {
+            if params.nshortcycle <= 0 {
+                return Err(NetworkCostError::InvalidNShortCycle {
+                    nshortcycle: params.nshortcycle,
+                });
+            }
+            let costs = costs.ok_or(NetworkCostError::MissingCostArray)?;
+            let expected_rows = 2 * nrow - 1;
+            if costs.len() != expected_rows {
+                return Err(NetworkCostError::InvalidRowCount {
+                    expected: expected_rows,
+                    got: costs.len(),
+                });
+            }
+            let mut initmaxflow = 0i64;
+            for (row, row_costs) in costs.iter().enumerate() {
+                let maxcol = if row < nrow - 1 { ncol } else { ncol - 1 };
+                if row_costs.len() != maxcol {
+                    return Err(NetworkCostError::InvalidRowLen {
+                        row,
+                        expected: maxcol,
+                        got: row_costs.len(),
+                    });
+                }
+                for cost in row_costs {
+                    if cost.dz_max != LARGE_SHORT {
+                        let arcmaxflow = ((i64::from(cost.dz_max).abs() as f64
+                            / params.nshortcycle as f64)
+                            + params.arcmaxflowconst as f64)
+                            .ceil() as i64;
+                        if arcmaxflow > initmaxflow {
+                            initmaxflow = arcmaxflow;
+                        }
+                    }
+                }
+            }
+            params.initmaxflow = initmaxflow;
+            Ok(())
+        }
+        CostMode::Smooth => {
+            params.initmaxflow = DEF_INIT_MAX_FLOW;
+            Ok(())
+        }
+    }
+}
+
+/// Evaluate one arc for reduced-cost violations and optionally add candidate.
+///
+/// This is the idiomatic Rust equivalent of C `CheckArcReducedCost()`.
+pub fn check_arc_reduced_cost(
+    from_idx: usize,
+    to_idx: usize,
+    apex_idx: usize,
+    arcrow: usize,
+    arccol: usize,
+    arcdir: i64,
+    nodes: &[TreeNode],
+    incrcosts: &[Vec<IncrCost>],
+    is_candidate: &mut [Vec<bool>],
+    candidate_bag: &mut Vec<CandidateArc>,
+) -> Result<bool, NetworkCostError> {
+    let len = nodes.len();
+    if from_idx >= len {
+        return Err(NetworkCostError::InvalidNodeIndex {
+            index: from_idx,
+            len,
+        });
+    }
+    if to_idx >= len {
+        return Err(NetworkCostError::InvalidNodeIndex { index: to_idx, len });
+    }
+    if apex_idx >= len {
+        return Err(NetworkCostError::InvalidNodeIndex {
+            index: apex_idx,
+            len,
+        });
+    }
+
+    let arc_cost = incrcosts
+        .get(arcrow)
+        .and_then(|row| row.get(arccol))
+        .ok_or(NetworkCostError::MissingArc { arcrow, arccol })?;
+    let marked = is_candidate
+        .get_mut(arcrow)
+        .and_then(|row| row.get_mut(arccol))
+        .ok_or(NetworkCostError::MissingArc { arcrow, arccol })?;
+    if *marked {
+        return Ok(false);
+    }
+
+    let mut from = from_idx;
+    let mut to = to_idx;
+    let mut out_dir = arcdir;
+
+    let apexcost = nodes[apex_idx].outcost + nodes[apex_idx].incost;
+    let fwdarcdist = i64::from(arc_cost.get_cost(out_dir));
+    let revarcdist = i64::from(arc_cost.get_cost(-out_dir));
+    let mut violation = fwdarcdist + nodes[from].outcost + nodes[to].incost - apexcost;
+
+    if violation < 0 {
+        out_dir *= 2;
+    } else {
+        violation = revarcdist + nodes[to].outcost + nodes[from].incost - apexcost;
+        if violation < 0 {
+            out_dir *= -2;
+            std::mem::swap(&mut from, &mut to);
+        } else {
+            violation = fwdarcdist + nodes[from].outcost - nodes[to].outcost;
+            if violation >= 0 {
+                violation = revarcdist + nodes[to].outcost - nodes[from].outcost;
+                if violation < 0 {
+                    out_dir = -out_dir;
+                    std::mem::swap(&mut from, &mut to);
+                }
+            }
+        }
+    }
+
+    if violation < 0 {
+        candidate_bag.push(CandidateArc {
+            violation,
+            from,
+            to,
+            arcrow,
+            arccol,
+            arcdir: out_dir,
+        });
+        *marked = true;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Relabel all connected nodes in one region to `newnum`.
+///
+/// This is the idiomatic Rust equivalent of C `RenumberRegion()`.
+pub fn renumber_region(
+    region_ids: &mut [Vec<i64>],
+    source: GridNodeCoord,
+    newnum: i64,
+) -> Result<usize, NetworkCostError> {
+    if region_ids.is_empty() || region_ids[0].is_empty() {
+        return Err(NetworkCostError::InvalidRegionGrid);
+    }
+    let nrow = region_ids.len();
+    let ncol = region_ids[0].len();
+    if region_ids.iter().any(|row| row.len() != ncol) {
+        return Err(NetworkCostError::InvalidRegionGrid);
+    }
+    if source.row >= nrow || source.col >= ncol {
+        return Err(NetworkCostError::InvalidRegionSource {
+            row: source.row,
+            col: source.col,
+        });
+    }
+
+    let regionnum = region_ids[source.row][source.col];
+    let mut stack = vec![(source.row, source.col)];
+    let mut changed = 0usize;
+    while let Some((row, col)) = stack.pop() {
+        if region_ids[row][col] != regionnum {
+            continue;
+        }
+        region_ids[row][col] = newnum;
+        changed += 1;
+        if row > 0 && region_ids[row - 1][col] == regionnum {
+            stack.push((row - 1, col));
+        }
+        if row + 1 < nrow && region_ids[row + 1][col] == regionnum {
+            stack.push((row + 1, col));
+        }
+        if col > 0 && region_ids[row][col - 1] == regionnum {
+            stack.push((row, col - 1));
+        }
+        if col + 1 < ncol && region_ids[row][col + 1] == regionnum {
+            stack.push((row, col + 1));
+        }
+    }
+    Ok(changed)
+}
+
+/// Merge the connected source-region into `closest_region`.
+///
+/// This is the idiomatic Rust equivalent of C `MergeRegions()`.
+pub fn merge_regions(
+    region_ids: &mut [Vec<i64>],
+    source: GridNodeCoord,
+    region_sizes: &mut [i64],
+    closest_region: usize,
+) -> Result<usize, NetworkCostError> {
+    if closest_region >= region_sizes.len() {
+        return Err(NetworkCostError::InvalidRegionSizeIndex {
+            index: closest_region,
+            len: region_sizes.len(),
+        });
+    }
+    if region_ids.is_empty() || region_ids[0].is_empty() {
+        return Err(NetworkCostError::InvalidRegionGrid);
+    }
+    if source.row >= region_ids.len() || source.col >= region_ids[0].len() {
+        return Err(NetworkCostError::InvalidRegionSource {
+            row: source.row,
+            col: source.col,
+        });
+    }
+
+    let source_region = region_ids[source.row][source.col];
+    if source_region < 0 || source_region as usize >= region_sizes.len() {
+        return Err(NetworkCostError::InvalidRegionSizeIndex {
+            index: source_region.max(0) as usize,
+            len: region_sizes.len(),
+        });
+    }
+
+    let changed = renumber_region(region_ids, source, closest_region as i64)?;
+    region_sizes[closest_region] += region_sizes[source_region as usize];
+    Ok(changed)
+}
+
 /// Supplementary per-node metadata for secondary (tile-overlap) networks.
 ///
 /// Mirrors the `row` and `col` fields of the C `nodesuppT` struct, which
@@ -2295,5 +2781,145 @@ mod tests {
         assert_eq!(n, 2);
         assert_eq!(nodes[0].group, 0);
         assert_eq!(nodes[1].group, 0);
+    }
+
+    #[test]
+    fn recalc_cost_clips_large_values() {
+        let mut incr = vec![vec![IncrCost::default()]];
+        let clipped = recalc_cost(&mut incr, 0, 0, 0, 1, 2, |_flow, _r, _c, _nflow, _nrow| {
+            (50_000, -50_000)
+        })
+        .unwrap();
+        assert_eq!(clipped, 2);
+        assert_eq!(incr[0][0].poscost, LARGE_SHORT);
+        assert_eq!(incr[0][0].negcost, -LARGE_SHORT);
+    }
+
+    #[test]
+    fn setup_incr_flow_costs_reports_clipped_fraction() {
+        let mut incr = vec![
+            vec![
+                IncrCost::default(),
+                IncrCost::default(),
+                IncrCost::default(),
+            ],
+            vec![IncrCost::default(), IncrCost::default()],
+            vec![IncrCost::default(), IncrCost::default()],
+        ];
+        let flows = vec![vec![0i16, 1, 2], vec![0i16, 0], vec![0i16, 0]];
+        let stats = setup_incr_flow_costs(
+            &mut incr,
+            &flows,
+            1,
+            2,
+            &[3, 2, 2],
+            |_flow, _r, _c, _, _| (40_000, -40_000),
+        )
+        .unwrap();
+        assert_eq!(stats.narcs, 7);
+        assert_eq!(stats.clipped_cost_count, 14);
+        assert!((stats.clipped_fraction - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn evaluate_total_cost_grid_mode_sums_eval_callback() {
+        let flows = vec![vec![1i16, -2, 3], vec![4, 5], vec![-6, 7]];
+        let total = evaluate_total_cost(&flows, 2, Some(3), None, |arr, row, col, _| {
+            f64::from(arr[row][col].abs())
+        })
+        .unwrap();
+        assert_eq!(total, 28.0);
+    }
+
+    #[test]
+    fn calc_init_max_flow_uses_dzmax_for_topo_mode() {
+        let mut params = InitMaxFlowParams {
+            initmaxflow: 0,
+            costmode: CostMode::Topo,
+            nshortcycle: 2,
+            arcmaxflowconst: 3,
+        };
+        let costs = vec![
+            vec![
+                Cost::new(0, 0, 6, 0),
+                Cost::new(0, 0, LARGE_SHORT, 0),
+                Cost::new(0, 0, -9, 0),
+            ],
+            vec![Cost::new(0, 0, 1, 0), Cost::new(0, 0, 2, 0)],
+            vec![Cost::new(0, 0, 5, 0), Cost::new(0, 0, 8, 0)],
+        ];
+        calc_init_max_flow(&mut params, Some(&costs), 2, 3).unwrap();
+        assert_eq!(params.initmaxflow, 8);
+    }
+
+    #[test]
+    fn check_arc_reduced_cost_adds_candidate_when_violated() {
+        let nodes = vec![
+            TreeNode {
+                row: 0,
+                col: 0,
+                level: 0,
+                incost: 0,
+                outcost: 0,
+                pred: None,
+                group: TreeNodeGroup::Normal,
+                bucket_index: None,
+            },
+            TreeNode {
+                row: 0,
+                col: 1,
+                level: 0,
+                incost: -10,
+                outcost: 0,
+                pred: None,
+                group: TreeNodeGroup::Normal,
+                bucket_index: None,
+            },
+            TreeNode {
+                row: 0,
+                col: 2,
+                level: 0,
+                incost: 0,
+                outcost: 0,
+                pred: None,
+                group: TreeNodeGroup::Normal,
+                bucket_index: None,
+            },
+        ];
+        let incr = vec![vec![IncrCost::new(2, 5)]];
+        let mut is_candidate = vec![vec![false]];
+        let mut bag = Vec::new();
+
+        let added =
+            check_arc_reduced_cost(0, 1, 2, 0, 0, 1, &nodes, &incr, &mut is_candidate, &mut bag)
+                .unwrap();
+        assert!(added);
+        assert_eq!(bag.len(), 1);
+        assert!(bag[0].violation < 0);
+        assert!(is_candidate[0][0]);
+    }
+
+    #[test]
+    fn renumber_region_relabels_connected_component_only() {
+        let mut regions = vec![vec![1i64, 1, 2], vec![1, 3, 2], vec![4, 3, 2]];
+        let changed = renumber_region(&mut regions, GridNodeCoord { row: 0, col: 0 }, 9).unwrap();
+        assert_eq!(changed, 3);
+        assert_eq!(regions, vec![vec![9, 9, 2], vec![9, 3, 2], vec![4, 3, 2]]);
+    }
+
+    #[test]
+    fn merge_regions_updates_sizes_and_labels() {
+        let mut regions = vec![vec![0i64, 0, 1], vec![0, 2, 1], vec![3, 2, 1]];
+        let mut sizes = vec![3i64, 3, 2, 1];
+        let changed = merge_regions(
+            &mut regions,
+            GridNodeCoord { row: 0, col: 2 },
+            &mut sizes,
+            0,
+        )
+        .unwrap();
+        assert_eq!(changed, 3);
+        assert_eq!(regions, vec![vec![0, 0, 0], vec![0, 2, 0], vec![3, 2, 0]]);
+        assert_eq!(sizes[0], 6);
     }
 }
