@@ -15,4 +15,6 @@ pub use gradients::{
     GradientDirection, WrappedGradientError, WrappedGradientField, compute_azimuth_gradients,
     compute_range_gradients,
 };
-pub use types::{Cost, SmoothCost};
+pub use types::{
+    Cost, MaskWeightsError, SmoothCost, mask_cost, mask_prespecified_arc_costs, mask_smooth_cost,
+};
