@@ -90,13 +90,14 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ EI/intensity helpers (`RemoveMean`, `SolveEIModelParams`) are now translated with typed Rust APIs (`data::ops` + `costs::lookup`) and validation coverage.
    - ✅ IO wrappers (`ReadIntensity`, `ReadCorrelation`, `Write2DArray`, `WriteAltLineFile`, `WriteAltSampFile`) now exist as safe typed readers/writers in `io::{reader,writer}`.
    - ✅ Additional graph helpers (`ClosestNode`, `RegionsNeighborNode`, `ScanRegion`, `CheckLeaf`, `CheckBoundary`) are now available in `network::mod` with explicit traversal/consistency tests.
+   - ✅ `TraceSecondaryArc` now has a typed translation in `unwrapping::tiles`, split into cost-profile tracing and secondary-graph registration helpers, with convergence/zero-cost/reuse path tests.
    - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
     - Group remaining Priority ≥5 helpers into clearer buckets so they can be tackled incrementally:
       * Memory allocators / deallocators (Get2DMem, Free2DArray, Read/Write2D) – replace with Vec-backed helpers or document why to skip)
       * IO wrappers and alternate-file readers/writers (ReadIntensity, ReadAlt*).
-      * Cost math primitives (CalcDZRhoMax, SolveDZRCrit, EIofDZR, TraceSecondaryArc).
+      * Cost math primitives (CalcDZRhoMax, SolveDZRCrit, EIofDZR).
       * CS2/network-flow glue (cs2*, price_*, refine/update_epsilon, discharge).
-      * Graph/topology helpers (Grid/Ground masks, TraceSecondaryArc).
+      * Graph/topology helpers (Grid/Ground masks).
       * Boolean/math utilities (IsTrue/IsFalse/IsFinite, Set2DShortArray, Short2DRowColAbsMax, etc.).
 3. **Cost builders (Priority 4)**
    - Implement `BuildStatCosts*` in `costs` module, ensuring they only depend on previously translated helpers and `RuntimeState` slices.

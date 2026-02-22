@@ -176,7 +176,7 @@ StringToLong,4,
 StrNCopy,8,NOT_PLANNED
 ThickenCosts,4,
 TraceRegions,3,
-TraceSecondaryArc,5,
+TraceSecondaryArc,5,DONE
 TreeSolve,3,
 Unwrap,1,
 UnwrapTile,2,
