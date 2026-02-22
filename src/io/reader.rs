@@ -2,6 +2,7 @@
 
 //! File-reading helpers for rasters and metadata.
 
+use crate::data::ops::{non_neg_data_array, valid_data_array};
 use crate::data::raster::Raster;
 use std::ffi::OsString;
 use std::fs::File;
@@ -10,6 +11,37 @@ use std::path::{Path, PathBuf};
 
 pub fn read_phase_file(_path: &std::path::Path) {
     // TODO: implement.
+}
+
+/// Supported on-disk raster encodings used by the legacy SNAPHU readers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RasterFileFormat {
+    FloatData,
+    AltSampleData,
+    AltLineData,
+}
+
+/// File configuration for intensity reads (`ReadIntensity` equivalent).
+#[derive(Debug, Clone)]
+pub struct IntensityFiles {
+    pub ampfile: PathBuf,
+    pub ampfile2: Option<PathBuf>,
+    pub ampfile_format: RasterFileFormat,
+}
+
+/// File configuration for correlation reads (`ReadCorrelation` equivalent).
+#[derive(Debug, Clone)]
+pub struct CorrelationFile {
+    pub corrfile: PathBuf,
+    pub corrfile_format: RasterFileFormat,
+}
+
+/// Output bundle for intensity reads.
+#[derive(Debug, Clone)]
+pub struct IntensityData {
+    pub pwr: Raster<f32>,
+    pub pwr1: Option<Raster<f32>>,
+    pub pwr2: Option<Raster<f32>>,
 }
 
 /// Window describing the subset of a larger raster to read from disk.
@@ -429,6 +461,135 @@ pub fn read_alt_samp_file(
         Raster::new(window.ncol, window.nrow, arr1_data),
         Raster::new(window.ncol, window.nrow, arr2_data),
     ))
+}
+
+/// Read brightness/intensity inputs, optionally from two files.
+///
+/// This is the idiomatic Rust equivalent of the C `ReadIntensity()`
+/// function.
+pub fn read_intensity(
+    files: &IntensityFiles,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+    amplitude_input: bool,
+) -> io::Result<IntensityData> {
+    let mut pwr: Option<Raster<f32>> = None;
+    let mut pwr1: Option<Raster<f32>> = None;
+    let mut pwr2: Option<Raster<f32>> = None;
+
+    if let Some(ampfile2) = &files.ampfile2 {
+        if files.ampfile_format != RasterFileFormat::FloatData {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "illegal file formats specified for '{}' and '{}'",
+                    files.ampfile.display(),
+                    ampfile2.display()
+                ),
+            ));
+        }
+        pwr1 = Some(read_2d_array::<f32>(
+            &files.ampfile,
+            line_len,
+            nlines,
+            window,
+        )?);
+        pwr2 = Some(read_2d_array::<f32>(ampfile2, line_len, nlines, window)?);
+    } else {
+        match files.ampfile_format {
+            RasterFileFormat::AltSampleData => {
+                let (a, b) = read_alt_samp_file(&files.ampfile, line_len, nlines, window)?;
+                pwr1 = Some(a);
+                pwr2 = Some(b);
+            }
+            RasterFileFormat::AltLineData => {
+                let (a, b) = read_alt_line_file(&files.ampfile, line_len, nlines, window)?;
+                pwr1 = Some(a);
+                pwr2 = Some(b);
+            }
+            RasterFileFormat::FloatData => {
+                pwr = Some(read_2d_array::<f32>(
+                    &files.ampfile,
+                    line_len,
+                    nlines,
+                    window,
+                )?);
+            }
+        }
+    }
+
+    let check_valid = |r: &Raster<f32>| {
+        valid_data_array(&r.data, r.height, r.width)
+            && non_neg_data_array(&r.data, r.height, r.width)
+    };
+    if pwr1.as_ref().is_some_and(|r| !check_valid(r))
+        || pwr2.as_ref().is_some_and(|r| !check_valid(r))
+        || pwr.as_ref().is_some_and(|r| !check_valid(r))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "amplitude/power data must be finite and non-negative",
+        ));
+    }
+
+    if amplitude_input {
+        if let Some(r) = pwr1.as_mut() {
+            for v in &mut r.data {
+                *v *= *v;
+            }
+        }
+        if let Some(r) = pwr2.as_mut() {
+            for v in &mut r.data {
+                *v *= *v;
+            }
+        }
+        if let Some(r) = pwr.as_mut() {
+            for v in &mut r.data {
+                *v *= *v;
+            }
+        }
+    }
+
+    if let (Some(a), Some(b)) = (&pwr1, &pwr2) {
+        let mut avg = Vec::with_capacity(a.data.len());
+        for i in 0..a.data.len() {
+            avg.push((a.data[i] + b.data[i]) * 0.5);
+        }
+        pwr = Some(Raster::new(a.width, a.height, avg));
+    }
+
+    let pwr = pwr.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "intensity read did not produce an average power raster",
+        )
+    })?;
+    Ok(IntensityData { pwr, pwr1, pwr2 })
+}
+
+/// Read correlation from file.
+///
+/// This is the idiomatic Rust equivalent of the C `ReadCorrelation()`
+/// function.
+pub fn read_correlation(
+    file: &CorrelationFile,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+) -> io::Result<Raster<f32>> {
+    match file.corrfile_format {
+        RasterFileFormat::AltSampleData => {
+            let (_dummy, corr) = read_alt_samp_file(&file.corrfile, line_len, nlines, window)?;
+            Ok(corr)
+        }
+        RasterFileFormat::AltLineData => {
+            read_alt_line_file_phase(&file.corrfile, line_len, nlines, window)
+        }
+        RasterFileFormat::FloatData => {
+            read_2d_array::<f32>(&file.corrfile, line_len, nlines, window)
+        }
+    }
 }
 
 /// Row/column arc tile extracted from a packed RowCol file.
@@ -918,6 +1079,87 @@ mod tests {
             read_2d_row_col_file::<u16>(&path, 5, 4, TileWindow::new(3, 4, 2, 2)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(err.to_string().contains("tile window"));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_intensity_from_single_float_file() {
+        let path = temp_file("snaphu_rs_read_intensity_float");
+        let mut fp = File::create(&path).unwrap();
+        for value in 1..=12u32 {
+            fp.write_all(&(value as f32).to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let files = IntensityFiles {
+            ampfile: path.clone(),
+            ampfile2: None,
+            ampfile_format: RasterFileFormat::FloatData,
+        };
+        let intensity = read_intensity(&files, 4, 3, TileWindow::new(0, 0, 3, 4), false).unwrap();
+        assert_eq!(intensity.pwr.data.len(), 12);
+        assert!(intensity.pwr1.is_none());
+        assert!(intensity.pwr2.is_none());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_intensity_two_files_with_amplitude_squares_and_averages() {
+        let p1 = temp_file("snaphu_rs_read_intensity_a");
+        let p2 = temp_file("snaphu_rs_read_intensity_b");
+        let mut f1 = File::create(&p1).unwrap();
+        let mut f2 = File::create(&p2).unwrap();
+        let a = [1.0f32, 2.0, 3.0, 4.0];
+        let b = [2.0f32, 3.0, 4.0, 5.0];
+        for v in a {
+            f1.write_all(&v.to_ne_bytes()).unwrap();
+        }
+        for v in b {
+            f2.write_all(&v.to_ne_bytes()).unwrap();
+        }
+        drop(f1);
+        drop(f2);
+
+        let files = IntensityFiles {
+            ampfile: p1.clone(),
+            ampfile2: Some(p2.clone()),
+            ampfile_format: RasterFileFormat::FloatData,
+        };
+        let out = read_intensity(&files, 2, 2, TileWindow::new(0, 0, 2, 2), true).unwrap();
+        // (a^2+b^2)/2
+        assert_eq!(out.pwr.data, vec![2.5, 6.5, 12.5, 20.5]);
+        assert!(out.pwr1.is_some());
+        assert!(out.pwr2.is_some());
+
+        fs::remove_file(p1).unwrap();
+        fs::remove_file(p2).unwrap();
+    }
+
+    #[test]
+    fn read_correlation_from_alt_sample_uses_second_channel() {
+        let path = temp_file("snaphu_rs_read_corr_altsamp");
+        let mut fp = File::create(&path).unwrap();
+        // 2 lines x 2 cols -> 8 f32 samples interleaved
+        // channel A: 10,11,12,13 ; channel B: 20,21,22,23
+        let samples = [10.0f32, 20.0, 11.0, 21.0, 12.0, 22.0, 13.0, 23.0];
+        for v in samples {
+            fp.write_all(&v.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let corr = read_correlation(
+            &CorrelationFile {
+                corrfile: path.clone(),
+                corrfile_format: RasterFileFormat::AltSampleData,
+            },
+            2,
+            2,
+            TileWindow::new(0, 0, 2, 2),
+        )
+        .unwrap();
+        assert_eq!(corr.data, vec![20.0, 21.0, 22.0, 23.0]);
 
         fs::remove_file(path).unwrap();
     }

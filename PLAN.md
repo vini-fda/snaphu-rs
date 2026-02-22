@@ -86,13 +86,17 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Alternating-sample reader `ReadAltSampFile` now lives in `io::reader`, splitting interleaved `A/B` float samples into typed tile rasters with parity tests and strict size checks.
    - ✅ Packed arc reader `Read2DRowColFile` is available in `io::reader` as `RowColTile<T>` extraction, preserving row/column-block offsets and tile slicing rules from the C implementation.
    - ✅ Tree frontier helper `AddNewNode` now lives in `network::mod`, with explicit bucket-window semantics (`minind/maxind/curr`) and regression tests for reinsert, underflow, overflow, and predecessor-forced updates.
+   - ✅ Flow/residue helpers (`CalcFlow`, `NodeResidue`) are now implemented in `data::ops` with row/column-layout parity tests.
+   - ✅ EI/intensity helpers (`RemoveMean`, `SolveEIModelParams`) are now translated with typed Rust APIs (`data::ops` + `costs::lookup`) and validation coverage.
+   - ✅ IO wrappers (`ReadIntensity`, `ReadCorrelation`, `Write2DArray`, `WriteAltLineFile`, `WriteAltSampFile`) now exist as safe typed readers/writers in `io::{reader,writer}`.
+   - ✅ Additional graph helpers (`ClosestNode`, `RegionsNeighborNode`, `ScanRegion`, `CheckLeaf`, `CheckBoundary`) are now available in `network::mod` with explicit traversal/consistency tests.
    - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
     - Group remaining Priority ≥5 helpers into clearer buckets so they can be tackled incrementally:
       * Memory allocators / deallocators (Get2DMem, Free2DArray, Read/Write2D) – replace with Vec-backed helpers or document why to skip)
       * IO wrappers and alternate-file readers/writers (ReadIntensity, ReadAlt*).
-      * Cost math primitives (CalcDZRhoMax, SolveDZRCrit, EIofDZR, RemoveMean, TraceSecondaryArc).
+      * Cost math primitives (CalcDZRhoMax, SolveDZRCrit, EIofDZR, TraceSecondaryArc).
       * CS2/network-flow glue (cs2*, price_*, refine/update_epsilon, discharge).
-      * Graph/topology helpers (CalcFlow, CheckBoundary/Leaf, Grid/Ground masks, RegionsNeighborNode, TraceSecondaryArc).
+      * Graph/topology helpers (Grid/Ground masks, TraceSecondaryArc).
       * Boolean/math utilities (IsTrue/IsFalse/IsFinite, Set2DShortArray, Short2DRowColAbsMax, etc.).
 3. **Cost builders (Priority 4)**
    - Implement `BuildStatCosts*` in `costs` module, ensuring they only depend on previously translated helpers and `RuntimeState` slices.

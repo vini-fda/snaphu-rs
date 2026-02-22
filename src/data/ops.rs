@@ -387,6 +387,106 @@ pub fn short_2d_row_col_abs_max(arr: &[i16], nrow: usize, ncol: usize) -> i64 {
     max_val
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveMeanError {
+    KernelTooLarge,
+}
+
+/// Divides intensity by a local sliding-window average.
+///
+/// This is the idiomatic Rust equivalent of the C `RemoveMean()` helper.
+/// Even kernel dimensions are promoted to the next odd size, then mirror
+/// padding + boxcar averaging are used to compute local means.
+pub fn remove_mean(
+    ei: &mut [f32],
+    nrow: usize,
+    ncol: usize,
+    mut krowei: usize,
+    mut kcolei: usize,
+) -> Result<(), RemoveMeanError> {
+    validate_len(ei.len(), nrow, ncol);
+
+    if krowei % 2 == 0 {
+        krowei += 1;
+    }
+    if kcolei % 2 == 0 {
+        kcolei += 1;
+    }
+
+    let pad_rows = (krowei - 1) / 2;
+    let pad_cols = (kcolei - 1) / 2;
+    let Some(padded) = mirror_pad(ei, nrow, ncol, pad_rows, pad_cols) else {
+        return Err(RemoveMeanError::KernelTooLarge);
+    };
+
+    let mut avg = vec![0.0f32; nrow * ncol];
+    box_car_average(&mut avg, &padded, nrow, ncol, krowei, kcolei);
+    for (value, local_avg) in ei.iter_mut().zip(avg.iter()) {
+        *value /= *local_avg;
+    }
+    Ok(())
+}
+
+/// Compute wrapped residue for one grid node.
+///
+/// Equivalent to the C `NodeResidue()` function. The residue is built from
+/// the wrapped phase differences around the 2x2 plaquette whose top-left
+/// pixel is `(row, col)`.
+pub fn node_residue(wphase: &[f32], nrow: usize, ncol: usize, row: usize, col: usize) -> i32 {
+    validate_len(wphase.len(), nrow, ncol);
+    assert!(row + 1 < nrow, "row out of bounds for node residue");
+    assert!(col + 1 < ncol, "col out of bounds for node residue");
+    let idx = |r: usize, c: usize| r * ncol + c;
+    let residue = (mod_diff(
+        wphase[idx(row, col + 1)] as f64,
+        wphase[idx(row, col)] as f64,
+    ) + mod_diff(
+        wphase[idx(row + 1, col + 1)] as f64,
+        wphase[idx(row, col + 1)] as f64,
+    ) + mod_diff(
+        wphase[idx(row + 1, col)] as f64,
+        wphase[idx(row + 1, col + 1)] as f64,
+    ) + mod_diff(
+        wphase[idx(row, col)] as f64,
+        wphase[idx(row + 1, col)] as f64,
+    )) / TWO_PI;
+    l_round(residue) as i32
+}
+
+/// Calculate row/column flow arrays from an unwrapped phase raster.
+///
+/// Equivalent to the C `CalcFlow()` function. Output follows SNAPHU's
+/// row-col layout:
+/// - first `(nrow-1) * ncol` values are row arcs
+/// - then `nrow * (ncol-1)` values are col arcs
+pub fn calc_flow(phase: &[f32], nrow: usize, ncol: usize) -> Vec<i16> {
+    validate_len(phase.len(), nrow, ncol);
+    let row_arc_count = (nrow - 1) * ncol;
+    let col_arc_count = nrow * (ncol - 1);
+    let mut flows = vec![0i16; row_arc_count + col_arc_count];
+    let idx = |r: usize, c: usize| r * ncol + c;
+
+    for row in 0..(nrow - 1) {
+        for col in 0..ncol {
+            let flow =
+                l_round((phase[idx(row, col)] as f64 - phase[idx(row + 1, col)] as f64) / TWO_PI);
+            flows[row * ncol + col] = i16::try_from(flow).expect("row flow exceeds i16 range");
+        }
+    }
+
+    let col_base = row_arc_count;
+    for row in 0..nrow {
+        for col in 0..(ncol - 1) {
+            let flow =
+                l_round((phase[idx(row, col + 1)] as f64 - phase[idx(row, col)] as f64) / TWO_PI);
+            flows[col_base + row * (ncol - 1) + col] =
+                i16::try_from(flow).expect("col flow exceeds i16 range");
+        }
+    }
+
+    flows
+}
+
 /// Adaptive geometric (directional) despeckle filter for magnitude data.
 ///
 /// Filters using 8 directional arms of length `ARMLEN` around each pixel.
@@ -753,5 +853,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn remove_mean_divides_by_local_average() {
+        let mut ei = vec![2.0f32, 4.0, 6.0, 8.0];
+        remove_mean(&mut ei, 2, 2, 3, 3).unwrap();
+        assert!(ei.iter().all(|v| v.is_finite()));
+        // All entries are scaled, not left untouched.
+        assert_ne!(ei, vec![2.0, 4.0, 6.0, 8.0]);
+    }
+
+    #[test]
+    fn remove_mean_rejects_oversized_kernel() {
+        let mut ei = vec![1.0f32; 4];
+        let err = remove_mean(&mut ei, 2, 2, 9, 3).unwrap_err();
+        assert_eq!(err, RemoveMeanError::KernelTooLarge);
+    }
+
+    #[test]
+    fn node_residue_of_constant_phase_is_zero() {
+        let phase = vec![1.0f32; 9]; // 3x3
+        assert_eq!(node_residue(&phase, 3, 3, 0, 0), 0);
+        assert_eq!(node_residue(&phase, 3, 3, 1, 1), 0);
+    }
+
+    #[test]
+    fn calc_flow_zero_for_constant_phase() {
+        let phase = vec![5.0f32; 12]; // 3x4
+        let flow = calc_flow(&phase, 3, 4);
+        assert!(flow.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn calc_flow_matches_simple_gradient() {
+        // 2x3 field:
+        // [0, 2π, 4π]
+        // [2π, 4π, 6π]
+        // Row flows: [ -1, -1, -1 ]
+        // Col flows: [ 1, 1, 1, 1 ]
+        let p = std::f32::consts::TAU;
+        let phase = vec![0.0, p, 2.0 * p, p, 2.0 * p, 3.0 * p];
+        let flow = calc_flow(&phase, 2, 3);
+        assert_eq!(flow, vec![-1, -1, -1, 1, 1, 1, 1]);
     }
 }

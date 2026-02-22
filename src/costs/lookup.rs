@@ -19,6 +19,7 @@ pub struct LookupParameters {
     pub baseline: f64,
     pub baseline_angle: f64,
     pub kds: f64,
+    pub sloperatio_factor: f64,
     pub specular_exponent: f64,
     pub dzrcrit_factor: f64,
     pub initial_dzr: f64,
@@ -27,6 +28,17 @@ pub struct LookupParameters {
     pub range_resolution: f64,
     pub wavelength: f64,
     pub threshold: f64,
+}
+
+/// Parameters of the piecewise-linear EI model.
+///
+/// Equivalent outputs to the C `SolveEIModelParams()` function.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EiModelParams {
+    pub slope1: f64,
+    pub slope2: f64,
+    pub const1: f64,
+    pub const2: f64,
 }
 
 /// 1-D lookup table indexed by nominal incidence angle.
@@ -330,6 +342,51 @@ fn calc_dz_rho_max(rho: f64, angle: f64, params: &LookupParameters) -> LookupRes
     }
 }
 
+/// Calculate linearized EI-vs-slope model parameters.
+///
+/// This is the idiomatic Rust equivalent of the C `SolveEIModelParams()`
+/// function.
+pub fn solve_ei_model_params(
+    dzrcrit: f64,
+    dzr0: f64,
+    sin_nom_inc: f64,
+    cos_nom_inc: f64,
+    params: &LookupParameters,
+) -> LookupResult<EiModelParams> {
+    let slope_ratio = params.kds * params.sloperatio_factor;
+    if !slope_ratio.is_finite() || slope_ratio == 0.0 {
+        return Err(LookupError::InvalidConfiguration(
+            "kds * sloperatio_factor must be finite and non-zero",
+        ));
+    }
+
+    let dzr3 = 15.0 * (dzrcrit - dzr0) + dzr0;
+    let ei0 = ei_of_dzr(0.0, sin_nom_inc, cos_nom_inc, params);
+    if !ei0.is_finite() || ei0 == 0.0 {
+        return Err(LookupError::InvalidGeometry(
+            "EIofDZR(0) must be finite and non-zero",
+        ));
+    }
+    let ei3 = ei_of_dzr(dzr3, sin_nom_inc, cos_nom_inc, params) / ei0;
+    if !ei3.is_finite() || ei3 == 0.0 {
+        return Err(LookupError::InvalidGeometry(
+            "normalized EI reference must be finite and non-zero",
+        ));
+    }
+
+    let const1 = dzr0;
+    let slope2 = (slope_ratio * (dzrcrit - const1) - dzrcrit + dzr3) / ei3;
+    let slope1 = slope2 / slope_ratio;
+    let const2 = dzr3 - slope2 * ei3;
+
+    Ok(EiModelParams {
+        slope1,
+        slope2,
+        const1,
+        const2,
+    })
+}
+
 /// Calculates expected value of intensity (arbitrary units) for a given
 /// range slope `dzr`, assuming zero azimuth slope.
 ///
@@ -388,6 +445,7 @@ mod tests {
             baseline: 200.0,
             baseline_angle: 0.1,
             kds: 0.25,
+            sloperatio_factor: 1.5,
             specular_exponent: 3.0,
             dzrcrit_factor: 0.8,
             initial_dzr: 5.0,
@@ -502,5 +560,23 @@ mod tests {
         let angle: f64 = 0.6;
         let denom = ei_of_dzr(0.0, angle.sin(), angle.cos(), &params);
         assert!(denom > 0.0, "EI(0) must be positive for normalisation");
+    }
+
+    #[test]
+    fn solve_ei_model_params_returns_finite_coefficients() {
+        let params = sample_params();
+        let model = solve_ei_model_params(10.0, -2.0, 0.8, 0.6, &params).unwrap();
+        assert!(model.slope1.is_finite());
+        assert!(model.slope2.is_finite());
+        assert_eq!(model.const1, -2.0);
+        assert!(model.const2.is_finite());
+    }
+
+    #[test]
+    fn solve_ei_model_params_rejects_zero_slope_ratio() {
+        let mut params = sample_params();
+        params.sloperatio_factor = 0.0;
+        let err = solve_ei_model_params(10.0, -2.0, 0.8, 0.6, &params).unwrap_err();
+        assert!(matches!(err, LookupError::InvalidConfiguration(_)));
     }
 }

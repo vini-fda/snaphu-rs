@@ -133,6 +133,30 @@ impl FrontierBuckets {
             self.maxind
         }
     }
+
+    /// Return the closest node available in the bucket queue.
+    ///
+    /// This is the idiomatic Rust equivalent of C's `ClosestNode()`.
+    /// It scans buckets from `curr` upward to `maxind`, pops one node from
+    /// the first non-empty bucket, marks it as `OnTree`, and returns its
+    /// index. Returns `None` if no node is left.
+    pub fn closest_node(&mut self, nodes: &mut [TreeNode]) -> Option<usize> {
+        while self.curr <= self.maxind {
+            let offset = (self.curr - self.minind) as usize;
+            let Some(node_idx) = self.slots[offset].pop() else {
+                self.curr += 1;
+                continue;
+            };
+            if let Some(node) = nodes.get_mut(node_idx) {
+                node.group = TreeNodeGroup::OnTree;
+                node.bucket_index = None;
+                return Some(node_idx);
+            }
+            // Invalid node index should not happen with consistent callers.
+            return None;
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +182,63 @@ pub enum AddNodeError {
         node_idx: usize,
         bucket: i64,
     },
+}
+
+pub const ONTREE_GROUP: i32 = -1;
+pub const INBUCKET_GROUP: i32 = -2;
+pub const NOTINBUCKET_GROUP: i32 = -3;
+pub const PRUNED_GROUP: i32 = -4;
+pub const BOUNDARY_ROW: i64 = -4;
+pub const BOUNDARY_PTR_GROUP: i32 = -6;
+
+/// Node state used by region scans (`ScanRegion` / `CheckBoundary`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionTraversalNode {
+    pub row: i64,
+    pub col: usize,
+    pub group: i32,
+    pub level: i32,
+}
+
+/// Graph arc used by region scans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionTraversalArc {
+    pub to: usize,
+    pub arcrow: usize,
+    pub arccol: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionScanError {
+    StartNodeMasked,
+    MissingMagnitude,
+    InconsistentConnectedCount,
+    InconsistentBoundaryArcCount,
+    InvalidBoundaryNodeCount,
+}
+
+/// Arc metadata required by `check_leaf`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeafArcStatus {
+    pub neighbor_group: i32,
+    pub poscost: i16,
+    pub negcost: i16,
+    pub flow: i16,
+}
+
+/// Grid node coordinate used by region-neighbor scans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridNodeCoord {
+    pub row: usize,
+    pub col: usize,
+}
+
+/// Region-neighbor relation and corresponding arc index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionNeighbor {
+    pub node: GridNodeCoord,
+    pub arcrow: usize,
+    pub arccol: usize,
 }
 
 /// Adds a node to the bucket queue if needed, updating predecessor/outcost.
@@ -224,6 +305,242 @@ pub fn add_new_node(
     }
 
     Ok(())
+}
+
+/// Return the neighboring grid node for the requested arc number.
+///
+/// This is the idiomatic Rust equivalent of C `RegionsNeighborNode()`.
+/// `arcnum` is incremented like the C pointer argument.
+pub fn regions_neighbor_node(
+    node: GridNodeCoord,
+    arcnum: &mut i64,
+    nrow: usize,
+    ncol: usize,
+) -> Option<RegionNeighbor> {
+    loop {
+        let current = *arcnum;
+        *arcnum += 1;
+        match current {
+            0 => {
+                if node.col != ncol - 1 {
+                    return Some(RegionNeighbor {
+                        node: GridNodeCoord {
+                            row: node.row,
+                            col: node.col + 1,
+                        },
+                        arcrow: nrow - 1 + node.row,
+                        arccol: node.col,
+                    });
+                }
+            }
+            1 => {
+                if node.row != nrow - 1 {
+                    return Some(RegionNeighbor {
+                        node: GridNodeCoord {
+                            row: node.row + 1,
+                            col: node.col,
+                        },
+                        arcrow: node.row,
+                        arccol: node.col,
+                    });
+                }
+            }
+            2 => {
+                if node.col != 0 {
+                    return Some(RegionNeighbor {
+                        node: GridNodeCoord {
+                            row: node.row,
+                            col: node.col - 1,
+                        },
+                        arcrow: nrow - 1 + node.row,
+                        arccol: node.col - 1,
+                    });
+                }
+            }
+            3 => {
+                if node.row != 0 {
+                    return Some(RegionNeighbor {
+                        node: GridNodeCoord {
+                            row: node.row - 1,
+                            col: node.col,
+                        },
+                        arcrow: node.row - 1,
+                        arccol: node.col,
+                    });
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Check whether a tree node should be pruned.
+///
+/// This is the idiomatic Rust equivalent of C `CheckLeaf()`.
+pub fn check_leaf(
+    node_level: i32,
+    next_level: i32,
+    arcs: &[LeafArcStatus],
+    prune_cost_thresh: i16,
+) -> bool {
+    // Not a leaf if next threaded node is a child.
+    if next_level > node_level {
+        return false;
+    }
+
+    for arc in arcs {
+        if arc.neighbor_group == 0
+            || arc.neighbor_group == INBUCKET_GROUP
+            || arc.poscost < prune_cost_thresh
+            || arc.negcost < prune_cost_thresh
+            || arc.flow != 0
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Find all connected nodes in a region and update node groups.
+///
+/// This is the idiomatic Rust equivalent of C `ScanRegion()`. The caller
+/// supplies explicit graph adjacency (`adjacency`), while region membership
+/// still follows SNAPHU's arc test (`is_region_arc`).
+pub fn scan_region(
+    start_idx: usize,
+    nodes: &mut [RegionTraversalNode],
+    adjacency: &[Vec<RegionTraversalArc>],
+    mag: Option<&[f32]>,
+    nground_arcs: i64,
+    nrow: usize,
+    ncol: usize,
+    groupsetting: i32,
+) -> Result<usize, RegionScanError> {
+    let _ = nground_arcs; // Kept for parity with the C API surface.
+    use std::collections::VecDeque;
+
+    let mut queue = VecDeque::new();
+    let mut visited = Vec::new();
+    nodes[start_idx].group = INBUCKET_GROUP;
+    queue.push_back(start_idx);
+
+    while let Some(node_idx) = queue.pop_front() {
+        for arc in &adjacency[node_idx] {
+            let neighbor_idx = arc.to;
+            if nodes[neighbor_idx].group == BOUNDARY_PTR_GROUP {
+                nodes[neighbor_idx].group = 0;
+            }
+            if is_region_arc(mag, arc.arcrow, arc.arccol, nrow, ncol)
+                && nodes[neighbor_idx].group != ONTREE_GROUP
+                && nodes[neighbor_idx].group != INBUCKET_GROUP
+            {
+                nodes[neighbor_idx].group = INBUCKET_GROUP;
+                queue.push_back(neighbor_idx);
+            }
+        }
+
+        nodes[node_idx].group = ONTREE_GROUP;
+        if groupsetting == ONTREE_GROUP {
+            nodes[node_idx].level = 0;
+        }
+        visited.push(node_idx);
+    }
+
+    if groupsetting != ONTREE_GROUP {
+        for &node_idx in &visited {
+            for arc in &adjacency[node_idx] {
+                let neighbor_idx = arc.to;
+                if nodes[neighbor_idx].group != ONTREE_GROUP {
+                    if groupsetting == MASKED {
+                        nodes[neighbor_idx].group = MASKED;
+                    } else if groupsetting == 0 {
+                        let mag = mag.ok_or(RegionScanError::MissingMagnitude)?;
+                        nodes[neighbor_idx].group = if nodes[neighbor_idx].row == GROUNDROW {
+                            ground_mask_status(mag, nrow, ncol)
+                        } else {
+                            grid_node_mask_status(
+                                nodes[neighbor_idx].row as usize,
+                                nodes[neighbor_idx].col,
+                                mag,
+                                ncol,
+                            )
+                        };
+                    }
+                }
+            }
+        }
+        for &node_idx in &visited {
+            nodes[node_idx].group = 0;
+        }
+    }
+
+    Ok(visited.len())
+}
+
+/// Validate boundary connectivity and reset traversal groups.
+///
+/// This is the idiomatic Rust equivalent of C `CheckBoundary()`.
+pub fn check_boundary(
+    start_idx: usize,
+    nodes: &mut [RegionTraversalNode],
+    adjacency: &[Vec<RegionTraversalArc>],
+    expected_boundary_neighbor_count: usize,
+) -> Result<usize, RegionScanError> {
+    use std::collections::VecDeque;
+
+    if nodes[start_idx].group == MASKED {
+        return Err(RegionScanError::StartNodeMasked);
+    }
+
+    let mut queue = VecDeque::new();
+    let mut connected = Vec::new();
+    nodes[start_idx].group = INBUCKET_GROUP;
+    queue.push_back(start_idx);
+
+    while let Some(node_idx) = queue.pop_front() {
+        for arc in &adjacency[node_idx] {
+            let nidx = arc.to;
+            if nodes[nidx].group != MASKED
+                && nodes[nidx].group != ONTREE_GROUP
+                && nodes[nidx].group != INBUCKET_GROUP
+            {
+                nodes[nidx].group = INBUCKET_GROUP;
+                queue.push_back(nidx);
+            }
+        }
+        nodes[node_idx].group = ONTREE_GROUP;
+        connected.push(node_idx);
+    }
+
+    let nconnected = connected.len();
+    let mut nontree = 0usize;
+    let mut nboundary_arc = 0usize;
+    let mut nboundary_node = 0usize;
+    for &node_idx in &connected {
+        for arc in &adjacency[node_idx] {
+            if nodes[arc.to].row == BOUNDARY_ROW {
+                nboundary_arc += 1;
+            }
+        }
+        if nodes[node_idx].row == BOUNDARY_ROW {
+            nboundary_node += 1;
+        }
+        nontree += 1;
+        if nodes[node_idx].group == ONTREE_GROUP {
+            nodes[node_idx].group = 0;
+        }
+    }
+
+    if nontree != nconnected {
+        return Err(RegionScanError::InconsistentConnectedCount);
+    }
+    if nboundary_arc != expected_boundary_neighbor_count {
+        return Err(RegionScanError::InconsistentBoundaryArcCount);
+    }
+    if nboundary_node != 1 {
+        return Err(RegionScanError::InvalidBoundaryNodeCount);
+    }
+    Ok(nconnected)
 }
 
 /// Get the initial and ending values for `arcnum` to scan neighbors of a node.
@@ -896,5 +1213,214 @@ mod tests {
         let min_slot = buckets.bucket_mut(0).unwrap();
         assert_eq!(min_slot.len(), 1);
         assert_eq!(min_slot[0], 1);
+    }
+
+    #[test]
+    fn closest_node_returns_first_available_bucket_node() {
+        let mut nodes = vec![TreeNode::new(0), TreeNode::new(0), TreeNode::new(0)];
+        let mut buckets = FrontierBuckets::new(0, 5, 0).unwrap();
+        buckets.insert(2, 1).unwrap();
+        buckets.insert(4, 2).unwrap();
+
+        let idx = buckets.closest_node(&mut nodes).unwrap();
+        assert_eq!(idx, 1);
+        assert_eq!(nodes[idx].group, TreeNodeGroup::OnTree);
+        assert_eq!(buckets.curr, 2);
+    }
+
+    #[test]
+    fn closest_node_returns_none_when_no_nodes_left() {
+        let mut nodes = vec![TreeNode::new(0)];
+        let mut buckets = FrontierBuckets::new(0, 2, 0).unwrap();
+        assert_eq!(buckets.closest_node(&mut nodes), None);
+        assert_eq!(buckets.curr, 3);
+    }
+
+    #[test]
+    fn regions_neighbor_node_scans_right_down_left_up() {
+        let node = GridNodeCoord { row: 2, col: 3 };
+        let mut arcnum = 0;
+
+        let right = regions_neighbor_node(node, &mut arcnum, 5, 6).unwrap();
+        assert_eq!(right.node, GridNodeCoord { row: 2, col: 4 });
+        assert_eq!(right.arcrow, 6);
+        assert_eq!(right.arccol, 3);
+
+        let down = regions_neighbor_node(node, &mut arcnum, 5, 6).unwrap();
+        assert_eq!(down.node, GridNodeCoord { row: 3, col: 3 });
+        assert_eq!(down.arcrow, 2);
+        assert_eq!(down.arccol, 3);
+
+        let left = regions_neighbor_node(node, &mut arcnum, 5, 6).unwrap();
+        assert_eq!(left.node, GridNodeCoord { row: 2, col: 2 });
+        assert_eq!(left.arcrow, 6);
+        assert_eq!(left.arccol, 2);
+
+        let up = regions_neighbor_node(node, &mut arcnum, 5, 6).unwrap();
+        assert_eq!(up.node, GridNodeCoord { row: 1, col: 3 });
+        assert_eq!(up.arcrow, 1);
+        assert_eq!(up.arccol, 3);
+
+        assert_eq!(regions_neighbor_node(node, &mut arcnum, 5, 6), None);
+    }
+
+    #[test]
+    fn regions_neighbor_node_respects_boundaries() {
+        let mut arcnum = 0;
+        let top_left = GridNodeCoord { row: 0, col: 0 };
+        let n = regions_neighbor_node(top_left, &mut arcnum, 3, 3).unwrap();
+        assert_eq!(n.node, GridNodeCoord { row: 0, col: 1 });
+        let n = regions_neighbor_node(top_left, &mut arcnum, 3, 3).unwrap();
+        assert_eq!(n.node, GridNodeCoord { row: 1, col: 0 });
+        assert_eq!(regions_neighbor_node(top_left, &mut arcnum, 3, 3), None);
+    }
+
+    #[test]
+    fn check_leaf_requires_leaf_and_high_cost_zero_flow_neighbors() {
+        let arcs = vec![LeafArcStatus {
+            neighbor_group: ONTREE_GROUP,
+            poscost: 50,
+            negcost: 60,
+            flow: 0,
+        }];
+        assert!(check_leaf(3, 3, &arcs, 40));
+        assert!(!check_leaf(3, 4, &arcs, 40)); // has child in thread
+        assert!(!check_leaf(
+            3,
+            3,
+            &[LeafArcStatus {
+                poscost: 10,
+                ..arcs[0]
+            }],
+            40
+        ));
+        assert!(!check_leaf(
+            3,
+            3,
+            &[LeafArcStatus { flow: 1, ..arcs[0] }],
+            40
+        ));
+    }
+
+    #[test]
+    fn scan_region_marks_connected_region_and_resets_group_on_cleanup_mode() {
+        // 2x2 nodes, all connected through valid region arcs.
+        let mut nodes = vec![
+            RegionTraversalNode {
+                row: 0,
+                col: 0,
+                group: 0,
+                level: 9,
+            },
+            RegionTraversalNode {
+                row: 0,
+                col: 1,
+                group: 0,
+                level: 9,
+            },
+            RegionTraversalNode {
+                row: 1,
+                col: 0,
+                group: 0,
+                level: 9,
+            },
+            RegionTraversalNode {
+                row: 1,
+                col: 1,
+                group: 0,
+                level: 9,
+            },
+        ];
+        let adjacency = vec![
+            vec![
+                RegionTraversalArc {
+                    to: 1,
+                    arcrow: 2,
+                    arccol: 0,
+                },
+                RegionTraversalArc {
+                    to: 2,
+                    arcrow: 0,
+                    arccol: 0,
+                },
+            ],
+            vec![
+                RegionTraversalArc {
+                    to: 0,
+                    arcrow: 2,
+                    arccol: 0,
+                },
+                RegionTraversalArc {
+                    to: 3,
+                    arcrow: 1,
+                    arccol: 0,
+                },
+            ],
+            vec![
+                RegionTraversalArc {
+                    to: 0,
+                    arcrow: 0,
+                    arccol: 0,
+                },
+                RegionTraversalArc {
+                    to: 3,
+                    arcrow: 2,
+                    arccol: 1,
+                },
+            ],
+            vec![
+                RegionTraversalArc {
+                    to: 1,
+                    arcrow: 1,
+                    arccol: 0,
+                },
+                RegionTraversalArc {
+                    to: 2,
+                    arcrow: 2,
+                    arccol: 1,
+                },
+            ],
+        ];
+        let mag = vec![1.0f32; 9]; // 3x3 pixels around 2x2 nodes
+
+        let n = scan_region(0, &mut nodes, &adjacency, Some(&mag), 0, 3, 3, 0).unwrap();
+        assert_eq!(n, 4);
+        assert!(nodes.iter().all(|n| n.group == 0));
+    }
+
+    #[test]
+    fn check_boundary_counts_boundary_arcs_and_nodes() {
+        // node 0 is boundary row node; node 1 is regular node.
+        let mut nodes = vec![
+            RegionTraversalNode {
+                row: BOUNDARY_ROW,
+                col: 0,
+                group: 0,
+                level: 0,
+            },
+            RegionTraversalNode {
+                row: 0,
+                col: 0,
+                group: 0,
+                level: 0,
+            },
+        ];
+        let adjacency = vec![
+            vec![RegionTraversalArc {
+                to: 1,
+                arcrow: 0,
+                arccol: 0,
+            }],
+            vec![RegionTraversalArc {
+                to: 0,
+                arcrow: 0,
+                arccol: 0,
+            }],
+        ];
+
+        let n = check_boundary(1, &mut nodes, &adjacency, 1).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(nodes[0].group, 0);
+        assert_eq!(nodes[1].group, 0);
     }
 }
