@@ -94,6 +94,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ IO wrappers (`ReadMagnitude`, `ReadByteMask`, `ReadUnwrappedEstimateFile`, `ReadIntensity`, `ReadCorrelation`, `Write2DArray`, `Write2DRowColArray`, `WriteAltLineFile`, `WriteAltSampFile`) now exist as safe typed readers/writers in `io::{reader,writer}`.
    - ✅ Additional graph helpers (`ClosestNode`, `RegionsNeighborNode`, `ScanRegion`, `CheckLeaf`, `CheckBoundary`) are now available in `network::mod` with explicit traversal/consistency tests.
    - ✅ Network topology selectors (`SetGridNetworkFunctionPointers`, `SetNonGridNetworkFunctionPointers`) are represented in `network::mod` with explicit typed mode selection.
+   - ✅ Tree/masking network helpers (`CheckMagMasking`, `MaskNodes`, `MaxNonMaskFlow`, `InitNodeNums`, `InitNodes`, `InitBuckets`, `MinOutCostNode`, `FindApex`, `ClipFlow`, `ClearBuckets`) are translated in `network::mod` with row/col-layout and bucket-state parity tests.
    - ✅ `TraceSecondaryArc` now has a typed translation in `unwrapping::tiles`, split into cost-profile tracing and secondary-graph registration helpers, with convergence/zero-cost/reuse path tests.
    - ✅ Config parsing helpers `StringToDouble`/`StringToLong`/`SetBooleanSignedChar` now live in `config::mod`, preserving SNAPHU's full-string parse checks, infinity/overflow guards, legacy empty-string edge behavior, and signed-char boolean assignment semantics.
    - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.

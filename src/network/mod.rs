@@ -4,7 +4,7 @@
 
 pub mod bucket;
 
-use crate::constants::{GROUNDROW, MASKED};
+use crate::constants::{GROUNDROW, LARGE_SHORT, MASKED};
 use crate::costs::types::IncrCost;
 
 pub struct TileGraph;
@@ -59,6 +59,7 @@ pub struct ArcNumLimits {
 /// Per-node state used by translated tree-solver helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeNodeGroup {
+    Normal,
     NotInBucket,
     InBucket,
     OnTree,
@@ -69,6 +70,10 @@ pub enum TreeNodeGroup {
 /// Minimal node view needed by `add_new_node()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TreeNode {
+    pub row: i64,
+    pub col: i64,
+    pub level: i64,
+    pub incost: i64,
     pub outcost: i64,
     pub pred: Option<usize>,
     pub group: TreeNodeGroup,
@@ -78,6 +83,10 @@ pub struct TreeNode {
 impl TreeNode {
     pub fn new(outcost: i64) -> Self {
         Self {
+            row: 0,
+            col: 0,
+            level: 0,
+            incost: VERY_FAR,
             outcost,
             pred: None,
             group: TreeNodeGroup::NotInBucket,
@@ -215,6 +224,166 @@ pub const NOTINBUCKET_GROUP: i32 = -3;
 pub const PRUNED_GROUP: i32 = -4;
 pub const BOUNDARY_ROW: i64 = -4;
 pub const BOUNDARY_PTR_GROUP: i32 = -6;
+pub const GROUND_COL: i64 = -2;
+pub const VERY_FAR: i64 = 2_000_000_000;
+pub const CLIP_FACTOR: f64 = 0.666_666_666_7;
+pub const INIT_MAX_COST_INCR: i64 = 200;
+pub const MAX_RESIDUE: i64 = i8::MAX as i64;
+pub const MIN_RESIDUE: i64 = i8::MIN as i64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkDataError {
+    InvalidDimensions {
+        nrow: usize,
+        ncol: usize,
+    },
+    InvalidMagnitudeRows {
+        expected: usize,
+        got: usize,
+    },
+    InvalidMagnitudeCols {
+        row: usize,
+        expected: usize,
+        got: usize,
+    },
+    InvalidNodeRows {
+        expected: usize,
+        got: usize,
+    },
+    InvalidNodeCols {
+        row: usize,
+        expected: usize,
+        got: usize,
+    },
+    InvalidFlowRows {
+        expected: usize,
+        got: usize,
+    },
+    InvalidFlowCols {
+        row: usize,
+        expected: usize,
+        got: usize,
+    },
+    InvalidResidueRows {
+        expected: usize,
+        got: usize,
+    },
+    InvalidResidueCols {
+        row: usize,
+        expected: usize,
+        got: usize,
+    },
+    InvalidNodeIndex {
+        index: usize,
+        len: usize,
+    },
+    CostOutOfRange {
+        value: i64,
+    },
+    FlowOutOfRange {
+        value: i64,
+    },
+    ResidueOverflow {
+        row: usize,
+        col: usize,
+        value: i64,
+    },
+}
+
+fn validate_dims(nrow: usize, ncol: usize) -> Result<(), NetworkDataError> {
+    if nrow == 0 || ncol == 0 {
+        return Err(NetworkDataError::InvalidDimensions { nrow, ncol });
+    }
+    Ok(())
+}
+
+fn validate_mag_dims(mag: &[Vec<f32>], nrow: usize, ncol: usize) -> Result<(), NetworkDataError> {
+    if mag.len() != nrow {
+        return Err(NetworkDataError::InvalidMagnitudeRows {
+            expected: nrow,
+            got: mag.len(),
+        });
+    }
+    for (row, vals) in mag.iter().enumerate() {
+        if vals.len() != ncol {
+            return Err(NetworkDataError::InvalidMagnitudeCols {
+                row,
+                expected: ncol,
+                got: vals.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_node_grid_dims(
+    nodes: &[Vec<TreeNode>],
+    nrow: usize,
+    ncol: usize,
+) -> Result<(), NetworkDataError> {
+    if nodes.len() != nrow {
+        return Err(NetworkDataError::InvalidNodeRows {
+            expected: nrow,
+            got: nodes.len(),
+        });
+    }
+    for (row, vals) in nodes.iter().enumerate() {
+        if vals.len() != ncol {
+            return Err(NetworkDataError::InvalidNodeCols {
+                row,
+                expected: ncol,
+                got: vals.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_flow_dims(arr: &[Vec<i16>], nrow: usize, ncol: usize) -> Result<(), NetworkDataError> {
+    let expected_rows = 2 * nrow - 1;
+    if arr.len() != expected_rows {
+        return Err(NetworkDataError::InvalidFlowRows {
+            expected: expected_rows,
+            got: arr.len(),
+        });
+    }
+    for (row, vals) in arr.iter().enumerate() {
+        let expected_cols = if row < nrow - 1 { ncol } else { ncol - 1 };
+        if vals.len() != expected_cols {
+            return Err(NetworkDataError::InvalidFlowCols {
+                row,
+                expected: expected_cols,
+                got: vals.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_residue_dims(
+    residue: &[Vec<i8>],
+    nrow: usize,
+    ncol: usize,
+) -> Result<(), NetworkDataError> {
+    let expected_rows = nrow - 1;
+    if residue.len() != expected_rows {
+        return Err(NetworkDataError::InvalidResidueRows {
+            expected: expected_rows,
+            got: residue.len(),
+        });
+    }
+    for (row, vals) in residue.iter().enumerate() {
+        let expected_cols = ncol - 1;
+        if vals.len() != expected_cols {
+            return Err(NetworkDataError::InvalidResidueCols {
+                row,
+                expected: expected_cols,
+                got: vals.len(),
+            });
+        }
+    }
+    Ok(())
+}
 
 /// Node state used by region scans (`ScanRegion` / `CheckBoundary`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,6 +497,444 @@ pub fn add_new_node(
             buckets.curr = buckets.minind;
         }
     }
+
+    Ok(())
+}
+
+/// Check whether all pixels are masked (`<= 0` magnitude).
+///
+/// Equivalent to C `CheckMagMasking()`. Returns `true` only when every pixel
+/// is masked; returns `false` as soon as an unmasked (`> 0`) pixel is found.
+pub fn check_mag_masking(
+    mag: &[Vec<f32>],
+    nrow: usize,
+    ncol: usize,
+) -> Result<bool, NetworkDataError> {
+    validate_dims(nrow, ncol)?;
+    validate_mag_dims(mag, nrow, ncol)?;
+
+    for row_vals in mag.iter().take(nrow) {
+        for &value in row_vals.iter().take(ncol) {
+            if value > 0.0 {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Set node groups based on magnitude masking for grid and ground nodes.
+///
+/// Equivalent to C `MaskNodes()`. Grid nodes become `Masked` only when all
+/// four surrounding pixels are zero; otherwise they become `Normal`. The
+/// ground node becomes `Masked` only when all boundary pixels are zero.
+pub fn mask_nodes(
+    nrow: usize,
+    ncol: usize,
+    nodes: &mut [Vec<TreeNode>],
+    ground: &mut TreeNode,
+    mag: &[Vec<f32>],
+) -> Result<(), NetworkDataError> {
+    validate_dims(nrow, ncol)?;
+    validate_mag_dims(mag, nrow, ncol)?;
+    validate_node_grid_dims(nodes, nrow - 1, ncol - 1)?;
+
+    for row in 0..(nrow - 1) {
+        for col in 0..(ncol - 1) {
+            let masked = mag[row][col] == 0.0
+                && mag[row][col + 1] == 0.0
+                && mag[row + 1][col] == 0.0
+                && mag[row + 1][col + 1] == 0.0;
+            nodes[row][col].group = if masked {
+                TreeNodeGroup::Masked
+            } else {
+                TreeNodeGroup::Normal
+            };
+        }
+    }
+
+    let mut ground_masked = true;
+    for row_vals in mag.iter().take(nrow) {
+        if row_vals[0] != 0.0 || row_vals[ncol - 1] != 0.0 {
+            ground_masked = false;
+            break;
+        }
+    }
+    if ground_masked {
+        for value in mag[0].iter().take(ncol) {
+            if *value != 0.0 {
+                ground_masked = false;
+                break;
+            }
+        }
+    }
+    if ground_masked {
+        for value in mag[nrow - 1].iter().take(ncol) {
+            if *value != 0.0 {
+                ground_masked = false;
+                break;
+            }
+        }
+    }
+    ground.group = if ground_masked {
+        TreeNodeGroup::Masked
+    } else {
+        TreeNodeGroup::Normal
+    };
+
+    Ok(())
+}
+
+/// Return the maximum absolute flow that does not touch masked pixels.
+///
+/// Equivalent to C `MaxNonMaskFlow()`.
+pub fn max_non_mask_flow(
+    flows: &[Vec<i16>],
+    mag: &[Vec<f32>],
+    nrow: usize,
+    ncol: usize,
+) -> Result<i64, NetworkDataError> {
+    validate_dims(nrow, ncol)?;
+    validate_flow_dims(flows, nrow, ncol)?;
+    validate_mag_dims(mag, nrow, ncol)?;
+
+    let mut mostflow = 0i64;
+
+    for row in 0..(nrow - 1) {
+        for col in 0..ncol {
+            let flowvalue = i64::from(flows[row][col]).abs();
+            if flowvalue > mostflow && mag[row][col] > 0.0 && mag[row + 1][col] > 0.0 {
+                mostflow = flowvalue;
+            }
+        }
+    }
+
+    for row in (nrow - 1)..(2 * nrow - 1) {
+        for col in 0..(ncol - 1) {
+            let flowvalue = i64::from(flows[row][col]).abs();
+            let mag_row = row - (nrow - 1);
+            if flowvalue > mostflow && mag[mag_row][col] > 0.0 && mag[mag_row][col + 1] > 0.0 {
+                mostflow = flowvalue;
+            }
+        }
+    }
+
+    Ok(mostflow)
+}
+
+/// Initialize node `(row, col)` coordinates for the grid and optional ground.
+///
+/// Equivalent to C `InitNodeNums()`.
+pub fn init_node_nums(
+    nrow: usize,
+    ncol: usize,
+    nodes: &mut [Vec<TreeNode>],
+    ground: Option<&mut TreeNode>,
+) -> Result<(), NetworkDataError> {
+    validate_node_grid_dims(nodes, nrow, ncol)?;
+
+    for (row, row_nodes) in nodes.iter_mut().enumerate().take(nrow) {
+        for (col, node) in row_nodes.iter_mut().enumerate().take(ncol) {
+            node.row = row as i64;
+            node.col = col as i64;
+        }
+    }
+
+    if let Some(ground) = ground {
+        ground.row = GROUNDROW;
+        ground.col = GROUND_COL;
+    }
+
+    Ok(())
+}
+
+/// Reset node tree state before a solve pass.
+///
+/// Equivalent to C `InitNodes()`.
+pub fn init_nodes(
+    nrow: usize,
+    ncol: usize,
+    nodes: &mut [Vec<TreeNode>],
+    ground: Option<&mut TreeNode>,
+) -> Result<(), NetworkDataError> {
+    validate_node_grid_dims(nodes, nrow, ncol)?;
+
+    for row_nodes in nodes.iter_mut().take(nrow) {
+        for node in row_nodes.iter_mut().take(ncol) {
+            node.group = TreeNodeGroup::NotInBucket;
+            node.incost = VERY_FAR;
+            node.outcost = VERY_FAR;
+            node.pred = None;
+            node.bucket_index = None;
+        }
+    }
+
+    if let Some(ground) = ground {
+        ground.group = TreeNodeGroup::NotInBucket;
+        ground.incost = VERY_FAR;
+        ground.outcost = VERY_FAR;
+        ground.pred = None;
+        ground.bucket_index = None;
+    }
+
+    Ok(())
+}
+
+/// Initialize bucket storage and insert a source node at the first bucket.
+///
+/// Equivalent to C `InitBuckets()`.
+pub fn init_buckets(
+    buckets: &mut FrontierBuckets,
+    nodes: &mut [TreeNode],
+    source_idx: usize,
+) -> Result<(), AddNodeError> {
+    let len = nodes.len();
+    let source = nodes
+        .get_mut(source_idx)
+        .ok_or(AddNodeError::InvalidNodeIndex {
+            index: source_idx,
+            len,
+        })?;
+
+    for slot in &mut buckets.slots {
+        slot.clear();
+    }
+
+    buckets.curr = buckets.minind;
+    buckets.insert(buckets.minind, source_idx)?;
+
+    source.group = TreeNodeGroup::InBucket;
+    source.outcost = 0;
+    source.bucket_index = Some(buckets.minind);
+
+    Ok(())
+}
+
+/// Return a common ancestor (cycle apex) for two tree nodes.
+///
+/// Equivalent to C `FindApex()`.
+pub fn find_apex(nodes: &[TreeNode], mut from_idx: usize, mut to_idx: usize) -> Option<usize> {
+    if from_idx >= nodes.len() || to_idx >= nodes.len() {
+        return None;
+    }
+
+    if nodes[from_idx].level > nodes[to_idx].level {
+        while nodes[from_idx].level != nodes[to_idx].level {
+            from_idx = nodes[from_idx].pred?;
+        }
+    } else {
+        while nodes[from_idx].level != nodes[to_idx].level {
+            to_idx = nodes[to_idx].pred?;
+        }
+    }
+
+    while from_idx != to_idx {
+        from_idx = nodes[from_idx].pred?;
+        to_idx = nodes[to_idx].pred?;
+    }
+    Some(from_idx)
+}
+
+/// Remove and return the minimum-outcost node from the current bucket window.
+///
+/// Equivalent to C `MinOutCostNode()`. If no node is available, returns `None`.
+pub fn min_out_cost_node(
+    buckets: &mut FrontierBuckets,
+    nodes: &mut [TreeNode],
+) -> Result<Option<usize>, AddNodeError> {
+    while buckets.curr < buckets.maxind {
+        let offset = (buckets.curr - buckets.minind) as usize;
+        if !buckets.slots[offset].is_empty() {
+            break;
+        }
+        buckets.curr += 1;
+    }
+
+    if buckets.curr > buckets.maxind {
+        return Ok(None);
+    }
+
+    let bucket = buckets.curr;
+    let node_idx = if bucket == buckets.minind || bucket == buckets.maxind {
+        let slot = buckets.bucket_mut(bucket)?;
+        let Some(&first_idx) = slot.first() else {
+            return Ok(None);
+        };
+        if first_idx >= nodes.len() {
+            return Err(AddNodeError::InvalidNodeIndex {
+                index: first_idx,
+                len: nodes.len(),
+            });
+        }
+        let mut best_pos = 0usize;
+        let mut best_cost = nodes[first_idx].outcost;
+        for (pos, &candidate_idx) in slot.iter().enumerate().skip(1) {
+            if candidate_idx >= nodes.len() {
+                return Err(AddNodeError::InvalidNodeIndex {
+                    index: candidate_idx,
+                    len: nodes.len(),
+                });
+            }
+            let candidate_cost = nodes[candidate_idx].outcost;
+            if candidate_cost < best_cost {
+                best_cost = candidate_cost;
+                best_pos = pos;
+            }
+        }
+        slot.swap_remove(best_pos)
+    } else {
+        let slot = buckets.bucket_mut(bucket)?;
+        let Some(node_idx) = slot.pop() else {
+            return Ok(None);
+        };
+        node_idx
+    };
+
+    if node_idx >= nodes.len() {
+        return Err(AddNodeError::InvalidNodeIndex {
+            index: node_idx,
+            len: nodes.len(),
+        });
+    }
+    nodes[node_idx].bucket_index = None;
+    Ok(Some(node_idx))
+}
+
+fn apply_residue_delta(
+    residue: &mut [Vec<i8>],
+    row: usize,
+    col: usize,
+    delta: i64,
+) -> Result<(), NetworkDataError> {
+    let value = i64::from(residue[row][col]) + delta;
+    if !(MIN_RESIDUE..=MAX_RESIDUE).contains(&value) {
+        return Err(NetworkDataError::ResidueOverflow { row, col, value });
+    }
+    residue[row][col] = value as i8;
+    Ok(())
+}
+
+/// Clip flows, update residue pushes, and raise clipped-arc costs.
+///
+/// Equivalent to C `ClipFlow()`. Returns:
+/// - `Ok(true)` when no rerun is needed (already below limit or max-cost guard)
+/// - `Ok(false)` when clipping occurred and the solver should rerun.
+pub fn clip_flow(
+    residue: &mut [Vec<i8>],
+    flows: &mut [Vec<i16>],
+    mstcosts: &mut [Vec<i16>],
+    nrow: usize,
+    ncol: usize,
+    maxflow: i64,
+) -> Result<bool, NetworkDataError> {
+    validate_dims(nrow, ncol)?;
+    validate_residue_dims(residue, nrow, ncol)?;
+    validate_flow_dims(flows, nrow, ncol)?;
+    validate_flow_dims(mstcosts, nrow, ncol)?;
+
+    let mut mostflow = 0i64;
+    for row in 0..(2 * nrow - 1) {
+        let maxcol = if row < nrow - 1 { ncol } else { ncol - 1 };
+        for col in 0..maxcol {
+            mostflow = mostflow.max(i64::from(flows[row][col]).abs());
+        }
+    }
+
+    if mostflow <= maxflow {
+        return Ok(true);
+    }
+
+    let mut cliplimit = (f64::ceil(mostflow as f64 * CLIP_FACTOR) as i64) + 1;
+    if maxflow > cliplimit {
+        cliplimit = maxflow;
+    }
+
+    let mut maxcost = 0i64;
+    for row in 0..(2 * nrow - 1) {
+        let maxcol = if row < nrow - 1 { ncol } else { ncol - 1 };
+        for col in 0..maxcol {
+            let cost = i64::from(mstcosts[row][col]);
+            if cost > maxcost && cost < i64::from(LARGE_SHORT) {
+                maxcost = cost;
+            }
+        }
+    }
+
+    maxcost += INIT_MAX_COST_INCR;
+    if maxcost >= i64::from(LARGE_SHORT) {
+        return Ok(true);
+    }
+    let clipped_cost =
+        i16::try_from(maxcost).map_err(|_| NetworkDataError::CostOutOfRange { value: maxcost })?;
+
+    for row in 0..(2 * nrow - 1) {
+        let maxcol = if row < nrow - 1 { ncol } else { ncol - 1 };
+        for col in 0..maxcol {
+            let current = i64::from(flows[row][col]);
+            if current.abs() <= cliplimit {
+                continue;
+            }
+            let (sign, excess) = if current > 0 {
+                (1i64, current - cliplimit)
+            } else {
+                (-1i64, current + cliplimit)
+            };
+
+            if row < nrow - 1 {
+                if col != 0 {
+                    apply_residue_delta(residue, row, col - 1, excess)?;
+                }
+                if col != ncol - 1 {
+                    apply_residue_delta(residue, row, col, -excess)?;
+                }
+            } else {
+                if row != nrow - 1 {
+                    apply_residue_delta(residue, row - nrow, col, excess)?;
+                }
+                if row != 2 * nrow - 2 {
+                    apply_residue_delta(residue, row - nrow + 1, col, -excess)?;
+                }
+            }
+
+            let clipped_flow = sign * cliplimit;
+            flows[row][col] =
+                i16::try_from(clipped_flow).map_err(|_| NetworkDataError::FlowOutOfRange {
+                    value: clipped_flow,
+                })?;
+            mstcosts[row][col] = clipped_cost;
+        }
+    }
+
+    Ok(false)
+}
+
+/// Remove all nodes from buckets and reset bucket/node state.
+///
+/// Equivalent to C `ClearBuckets()`.
+pub fn clear_buckets(
+    buckets: &mut FrontierBuckets,
+    nodes: &mut [TreeNode],
+) -> Result<(), AddNodeError> {
+    for slot in &mut buckets.slots {
+        for &node_idx in slot.iter() {
+            let len = nodes.len();
+            let node = nodes
+                .get_mut(node_idx)
+                .ok_or(AddNodeError::InvalidNodeIndex {
+                    index: node_idx,
+                    len,
+                })?;
+            node.group = TreeNodeGroup::NotInBucket;
+            node.outcost = VERY_FAR;
+            node.pred = None;
+            node.bucket_index = None;
+        }
+        slot.clear();
+    }
+
+    buckets.minind = 0;
+    buckets.maxind = buckets.slots.len() as i64 - 1;
+    buckets.curr = 0;
 
     Ok(())
 }
@@ -1102,6 +1709,231 @@ mod tests {
     #[test]
     fn find_secondary_node_empty_slice() {
         assert_eq!(find_secondary_node_index(&[], 0, 0), None);
+    }
+
+    fn node_grid(rows: usize, cols: usize, outcost: i64) -> Vec<Vec<TreeNode>> {
+        (0..rows)
+            .map(|_| (0..cols).map(|_| TreeNode::new(outcost)).collect())
+            .collect()
+    }
+
+    fn row_col_i16(nrow: usize, ncol: usize, value: i16) -> Vec<Vec<i16>> {
+        (0..(2 * nrow - 1))
+            .map(|row| {
+                if row < nrow - 1 {
+                    vec![value; ncol]
+                } else {
+                    vec![value; ncol - 1]
+                }
+            })
+            .collect()
+    }
+
+    fn residue_i8(nrow: usize, ncol: usize, value: i8) -> Vec<Vec<i8>> {
+        (0..(nrow - 1)).map(|_| vec![value; ncol - 1]).collect()
+    }
+
+    // --- New tree/masking helpers ---
+
+    #[test]
+    fn check_mag_masking_matches_c_semantics() {
+        let all_zero = vec![vec![0.0f32; 3]; 2];
+        assert!(check_mag_masking(&all_zero, 2, 3).unwrap());
+
+        let mut with_signal = all_zero.clone();
+        with_signal[1][2] = 0.1;
+        assert!(!check_mag_masking(&with_signal, 2, 3).unwrap());
+    }
+
+    #[test]
+    fn mask_nodes_sets_grid_and_ground_groups() {
+        let nrow = 3;
+        let ncol = 3;
+        let mut nodes = node_grid(nrow - 1, ncol - 1, 0);
+        let mut ground = TreeNode::new(0);
+        let mag = vec![
+            vec![0.0f32, 0.0, 0.0],
+            vec![0.0f32, 1.0, 0.0],
+            vec![0.0f32, 0.0, 0.0],
+        ];
+
+        mask_nodes(nrow, ncol, &mut nodes, &mut ground, &mag).unwrap();
+        for row in &nodes {
+            for node in row {
+                assert_eq!(node.group, TreeNodeGroup::Normal);
+            }
+        }
+        // Ground only checks image boundaries; interior nonzero does not unmask it.
+        assert_eq!(ground.group, TreeNodeGroup::Masked);
+    }
+
+    #[test]
+    fn max_non_mask_flow_ignores_arcs_touching_masked_pixels() {
+        let nrow = 3;
+        let ncol = 3;
+        let mut flows = row_col_i16(nrow, ncol, 0);
+        let mag = vec![
+            vec![1.0f32, 1.0, 1.0],
+            vec![1.0f32, 0.0, 1.0],
+            vec![1.0f32, 1.0, 1.0],
+        ];
+
+        flows[0][1] = 50; // touches masked pixel at (1,1) -> ignored
+        flows[2][0] = -30; // valid column arc between two unmasked pixels
+        flows[1][0] = 20; // valid row arc
+
+        assert_eq!(max_non_mask_flow(&flows, &mag, nrow, ncol).unwrap(), 30);
+    }
+
+    #[test]
+    fn init_node_nums_sets_grid_and_ground_coordinates() {
+        let mut nodes = node_grid(2, 3, 5);
+        let mut ground = TreeNode::new(0);
+        init_node_nums(2, 3, &mut nodes, Some(&mut ground)).unwrap();
+
+        assert_eq!(nodes[0][0].row, 0);
+        assert_eq!(nodes[0][0].col, 0);
+        assert_eq!(nodes[1][2].row, 1);
+        assert_eq!(nodes[1][2].col, 2);
+        assert_eq!(ground.row, GROUNDROW);
+        assert_eq!(ground.col, GROUND_COL);
+    }
+
+    #[test]
+    fn init_nodes_resets_tree_state() {
+        let mut nodes = node_grid(2, 2, 9);
+        nodes[1][1].group = TreeNodeGroup::InBucket;
+        nodes[1][1].incost = 7;
+        nodes[1][1].pred = Some(0);
+        nodes[1][1].bucket_index = Some(1);
+        let mut ground = TreeNode::new(123);
+        ground.group = TreeNodeGroup::OnTree;
+        ground.incost = 88;
+        ground.pred = Some(0);
+        ground.bucket_index = Some(4);
+
+        init_nodes(2, 2, &mut nodes, Some(&mut ground)).unwrap();
+
+        assert_eq!(nodes[1][1].group, TreeNodeGroup::NotInBucket);
+        assert_eq!(nodes[1][1].incost, VERY_FAR);
+        assert_eq!(nodes[1][1].outcost, VERY_FAR);
+        assert_eq!(nodes[1][1].pred, None);
+        assert_eq!(nodes[1][1].bucket_index, None);
+
+        assert_eq!(ground.group, TreeNodeGroup::NotInBucket);
+        assert_eq!(ground.incost, VERY_FAR);
+        assert_eq!(ground.outcost, VERY_FAR);
+        assert_eq!(ground.pred, None);
+        assert_eq!(ground.bucket_index, None);
+    }
+
+    #[test]
+    fn init_buckets_places_source_in_first_bucket() {
+        let mut buckets = FrontierBuckets::new(0, 3, 2).unwrap();
+        let mut nodes = vec![TreeNode::new(9), TreeNode::new(10)];
+
+        init_buckets(&mut buckets, &mut nodes, 1).unwrap();
+
+        assert_eq!(buckets.curr, 0);
+        assert_eq!(buckets.slots[0], vec![1]);
+        assert_eq!(nodes[1].group, TreeNodeGroup::InBucket);
+        assert_eq!(nodes[1].outcost, 0);
+        assert_eq!(nodes[1].bucket_index, Some(0));
+    }
+
+    #[test]
+    fn min_out_cost_node_scans_extreme_bucket_for_true_minimum() {
+        let mut buckets = FrontierBuckets::new(0, 4, 0).unwrap();
+        let mut nodes = vec![TreeNode::new(8), TreeNode::new(3), TreeNode::new(5)];
+        buckets.insert(0, 0).unwrap();
+        buckets.insert(0, 1).unwrap();
+        buckets.insert(0, 2).unwrap();
+        nodes[0].bucket_index = Some(0);
+        nodes[1].bucket_index = Some(0);
+        nodes[2].bucket_index = Some(0);
+
+        let chosen = min_out_cost_node(&mut buckets, &mut nodes)
+            .unwrap()
+            .unwrap();
+        assert_eq!(chosen, 1);
+        assert_eq!(nodes[chosen].bucket_index, None);
+    }
+
+    #[test]
+    fn find_apex_returns_deepest_common_ancestor() {
+        let mut nodes = vec![TreeNode::new(0); 5];
+        nodes[0].level = 0;
+        nodes[0].pred = None;
+        nodes[1].level = 1;
+        nodes[1].pred = Some(0);
+        nodes[2].level = 2;
+        nodes[2].pred = Some(1);
+        nodes[3].level = 1;
+        nodes[3].pred = Some(0);
+        nodes[4].level = 2;
+        nodes[4].pred = Some(3);
+
+        assert_eq!(find_apex(&nodes, 2, 4), Some(0));
+        assert_eq!(find_apex(&nodes, 2, 1), Some(1));
+    }
+
+    #[test]
+    fn clip_flow_returns_true_when_no_clipping_needed() {
+        let nrow = 3;
+        let ncol = 3;
+        let mut residue = residue_i8(nrow, ncol, 0);
+        let mut flows = row_col_i16(nrow, ncol, 0);
+        let mut mstcosts = row_col_i16(nrow, ncol, 10);
+        flows[0][0] = 3;
+
+        let stable = clip_flow(&mut residue, &mut flows, &mut mstcosts, nrow, ncol, 3).unwrap();
+        assert!(stable);
+        assert_eq!(flows[0][0], 3);
+        assert_eq!(residue[0][0], 0);
+    }
+
+    #[test]
+    fn clip_flow_clips_updates_residue_and_costs() {
+        let nrow = 3;
+        let ncol = 3;
+        let mut residue = residue_i8(nrow, ncol, 0);
+        let mut flows = row_col_i16(nrow, ncol, 0);
+        let mut mstcosts = row_col_i16(nrow, ncol, 20);
+        flows[1][1] = 10;
+
+        let stable = clip_flow(&mut residue, &mut flows, &mut mstcosts, nrow, ncol, 3).unwrap();
+        assert!(!stable);
+        // mostflow=10 -> cliplimit=8
+        assert_eq!(flows[1][1], 8);
+        assert_eq!(residue[1][0], 2);
+        assert_eq!(residue[1][1], -2);
+        assert_eq!(mstcosts[1][1], 220);
+    }
+
+    #[test]
+    fn clear_buckets_resets_node_state_and_bucket_window() {
+        let mut buckets = FrontierBuckets::new(2, 5, 4).unwrap();
+        let mut nodes = vec![TreeNode::new(1), TreeNode::new(2)];
+        buckets.insert(2, 0).unwrap();
+        buckets.insert(5, 1).unwrap();
+        nodes[0].group = TreeNodeGroup::InBucket;
+        nodes[1].group = TreeNodeGroup::InBucket;
+        nodes[0].pred = Some(1);
+        nodes[1].pred = Some(0);
+        nodes[0].bucket_index = Some(2);
+        nodes[1].bucket_index = Some(5);
+
+        clear_buckets(&mut buckets, &mut nodes).unwrap();
+
+        assert_eq!(buckets.minind, 0);
+        assert_eq!(buckets.maxind, 3);
+        assert_eq!(buckets.curr, 0);
+        assert!(buckets.slots.iter().all(Vec::is_empty));
+        assert_eq!(nodes[0].group, TreeNodeGroup::NotInBucket);
+        assert_eq!(nodes[0].outcost, VERY_FAR);
+        assert_eq!(nodes[0].pred, None);
+        assert_eq!(nodes[0].bucket_index, None);
+        assert_eq!(nodes[1].group, TreeNodeGroup::NotInBucket);
     }
 
     // --- AddNewNode ---
