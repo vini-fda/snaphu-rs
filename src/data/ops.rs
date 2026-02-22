@@ -112,6 +112,148 @@ pub fn l_clip(value: i32, min: i32, max: i32) -> i32 {
     }
 }
 
+/// Mirror pads a 2-D array by `pad_rows`/`pad_cols` while reflecting edges.
+///
+/// Returns `None` if the requested padding would exceed the array dimensions,
+/// signaling the caller to keep using the original raster (mirrors the C
+/// implementation that returned the original pointer in that case).
+pub fn mirror_pad<T>(
+    src: &[T],
+    rows: usize,
+    cols: usize,
+    pad_rows: usize,
+    pad_cols: usize,
+) -> Option<Vec<T>>
+where
+    T: Copy + Default,
+{
+    let total = rows
+        .checked_mul(cols)
+        .expect("rows*cols would overflow when validating source length");
+    assert_eq!(src.len(), total, "source length mismatch");
+    if rows == 0 || cols == 0 {
+        return Some(vec![
+            T::default();
+            (rows + 2 * pad_rows) * (cols + 2 * pad_cols)
+        ]);
+    }
+    if pad_rows >= rows || pad_cols >= cols {
+        return None;
+    }
+
+    let padded_rows = rows + 2 * pad_rows;
+    let padded_cols = cols + 2 * pad_cols;
+    let mut dst = vec![T::default(); padded_rows * padded_cols];
+
+    for row in 0..rows {
+        let dst_offset = (row + pad_rows) * padded_cols + pad_cols;
+        let src_offset = row * cols;
+        dst[dst_offset..dst_offset + cols].copy_from_slice(&src[src_offset..src_offset + cols]);
+    }
+
+    if pad_rows == 0 && pad_cols == 0 {
+        return Some(dst);
+    }
+
+    let pr = pad_rows;
+    let pc = pad_cols;
+    let pc2 = 2 * pc;
+    let pr2 = 2 * pr;
+
+    for row in 0..pr {
+        for col in 0..pc {
+            let dst_idx = row * padded_cols + col;
+            let src_idx = (pr2 - row) * padded_cols + (pc2 - col);
+            dst[dst_idx] = dst[src_idx];
+
+            let dst_idx = row * padded_cols + (cols + pc + col);
+            let src_idx = (pr2 - row) * padded_cols + (cols + pc - 2 - col);
+            dst[dst_idx] = dst[src_idx];
+
+            let dst_idx = (rows + pr + row) * padded_cols + col;
+            let src_idx = (rows + pr - 2 - row) * padded_cols + (pc2 - col);
+            dst[dst_idx] = dst[src_idx];
+
+            let dst_idx = (rows + pr + row) * padded_cols + (cols + pc + col);
+            let src_idx = (rows + pr - 2 - row) * padded_cols + (cols + pc - 2 - col);
+            dst[dst_idx] = dst[src_idx];
+        }
+    }
+
+    for row in pr..(rows + pr) {
+        for col in 0..pc {
+            let dst_idx = row * padded_cols + col;
+            let src_idx = row * padded_cols + (pc2 - col);
+            dst[dst_idx] = dst[src_idx];
+
+            let dst_idx = row * padded_cols + (cols + pc + col);
+            let src_idx = row * padded_cols + (cols + pc - 2 - col);
+            dst[dst_idx] = dst[src_idx];
+        }
+    }
+
+    for col in pc..(cols + pc) {
+        for row in 0..pr {
+            let dst_idx = row * padded_cols + col;
+            let src_idx = (pr2 - row) * padded_cols + col;
+            dst[dst_idx] = dst[src_idx];
+
+            let dst_idx = (rows + pr + row) * padded_cols + col;
+            let src_idx = (rows + pr - 2 - row) * padded_cols + col;
+            dst[dst_idx] = dst[src_idx];
+        }
+    }
+
+    Some(dst)
+}
+
+/// 1-D linear interpolation that clamps to the array bounds.
+pub fn lin_interp_1d(arr: &[f32], index: f64) -> f32 {
+    assert!(arr.len() >= 1, "interpolation array must not be empty");
+    let int_part = index.floor();
+    if int_part < 0.0 {
+        return arr[0];
+    }
+    let upper_bound = (arr.len() - 1) as f64;
+    if int_part >= upper_bound {
+        return arr[arr.len() - 1];
+    }
+
+    let base = int_part as usize;
+    let frac = (index - int_part) as f32;
+    let weight0 = 1.0_f32 - frac;
+    (weight0 * arr[base] + frac * arr[base + 1]) / 2.0
+}
+
+/// 2-D linear interpolation using row-major storage.
+pub fn lin_interp_2d(arr: &[f32], rows: usize, cols: usize, row_idx: f64, col_idx: f64) -> f32 {
+    let total = rows
+        .checked_mul(cols)
+        .expect("rows*cols would overflow when validating array length");
+    assert_eq!(arr.len(), total, "array length mismatch");
+    assert!(rows >= 1 && cols >= 1, "interpolation array must have data");
+
+    let get_row = |row: usize| -> f32 {
+        let offset = row * cols;
+        lin_interp_1d(&arr[offset..offset + cols], col_idx)
+    };
+
+    let row_floor = row_idx.floor();
+    if row_floor < 0.0 {
+        return get_row(0);
+    }
+    let max_row = (rows - 1) as f64;
+    if row_floor >= max_row {
+        return get_row(rows - 1);
+    }
+
+    let base = row_floor as usize;
+    let frac = (row_idx - row_floor) as f32;
+    let lower = get_row(base);
+    let upper = get_row(base + 1);
+    ((1.0_f32 - frac) * lower + frac * upper) / 2.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +296,59 @@ mod tests {
         assert_eq!(l_clip(5, 0, 10), 5);
         assert_eq!(l_clip(-1, 0, 10), 0);
         assert_eq!(l_clip(15, 0, 10), 10);
+    }
+
+    #[test]
+    fn mirror_pad_reflects_edges() {
+        let data: Vec<i32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let rows = 3;
+        let cols = 4;
+        let pad_rows = 1;
+        let pad_cols = 1;
+        let padded_cols = cols + 2 * pad_cols;
+        let padded = mirror_pad(&data, rows, cols, pad_rows, pad_cols).unwrap();
+
+        // Center block matches original data.
+        for r in 0..rows {
+            for c in 0..cols {
+                let idx = (r + pad_rows) * padded_cols + (c + pad_cols);
+                assert_eq!(padded[idx], data[r * cols + c]);
+            }
+        }
+
+        // Sample a few mirrored positions, matching the original index math.
+        assert_eq!(padded[0 * padded_cols + 0], data[1 * cols + 1]);
+        assert_eq!(padded[0 * padded_cols + 5], data[1 * cols + 2]);
+        assert_eq!(padded[4 * padded_cols + 0], data[1 * cols + 1]);
+        assert_eq!(padded[4 * padded_cols + 5], data[1 * cols + 2]);
+        assert_eq!(padded[1 * padded_cols + 0], data[0 * cols + 1]);
+        assert_eq!(padded[1 * padded_cols + 5], data[0 * cols + 2]);
+    }
+
+    #[test]
+    fn mirror_pad_rejects_large_padding() {
+        let data = vec![0.0f32; 4];
+        assert!(mirror_pad(&data, 2, 2, 2, 1).is_none());
+    }
+
+    #[test]
+    fn lin_interp_1d_matches_reference() {
+        let arr = [0.0, 10.0, 20.0, 30.0];
+        assert_eq!(lin_interp_1d(&arr, -1.0), 0.0);
+        assert_eq!(lin_interp_1d(&arr, 10.0), 30.0);
+        let mid = lin_interp_1d(&arr, 1.5);
+        assert!((mid - 7.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lin_interp_2d_matches_reference() {
+        let arr: Vec<f32> = vec![0.0, 1.0, 2.0, 10.0, 11.0, 12.0, 20.0, 21.0, 22.0];
+        let val = lin_interp_2d(&arr, 3, 3, 0.5, 1.5);
+        // Expect averaging both dimensions (with /2 scaling from legacy code).
+        let expected_row0 = lin_interp_1d(&arr[0..3], 1.5);
+        let expected = ((1.0 - 0.5) * expected_row0 + 0.5 * lin_interp_1d(&arr[3..6], 1.5)) / 2.0;
+        assert!((val - expected).abs() < 1e-6);
+        assert_eq!(lin_interp_2d(&arr, 3, 3, -1.0, 0.0), 0.0);
+        assert_eq!(lin_interp_2d(&arr, 3, 3, 10.0, 2.0), 22.0);
     }
 }
