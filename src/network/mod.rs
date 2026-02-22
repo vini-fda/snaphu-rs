@@ -12,6 +12,42 @@ pub trait MinCostFlowSolver {
     fn solve(&mut self, graph: &TileGraph) -> Result<(), String>;
 }
 
+/// Supplementary per-node metadata for secondary (tile-overlap) networks.
+///
+/// Mirrors the `row` and `col` fields of the C `nodesuppT` struct, which
+/// record each secondary node's position in the primary network grid.
+/// Pointer-heavy fields (`neighbornodes`, `outarcs`) are not replicated here;
+/// they will be expressed as adjacency structures when the tile-assembly code
+/// is translated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeSupp {
+    pub row: i32,
+    pub col: i32,
+}
+
+impl NodeSupp {
+    pub fn new(row: i32, col: i32) -> Self {
+        Self { row, col }
+    }
+}
+
+/// Find the index of a secondary node whose primary-network coordinates
+/// match `(primary_row, primary_col)`.
+///
+/// This is the idiomatic Rust equivalent of the C `FindScndryNode()` function,
+/// which performed an unbounded linear scan and dereferenced the result as a
+/// pointer. The Rust version returns `Option<usize>` so the caller can handle
+/// the not-found case safely.
+pub fn find_secondary_node_index(
+    node_supp: &[NodeSupp],
+    primary_row: i32,
+    primary_col: i32,
+) -> Option<usize> {
+    node_supp
+        .iter()
+        .position(|ns| ns.row == primary_row && ns.col == primary_col)
+}
+
 /// Returns [`MASKED`] if all four pixels surrounding a grid node have zero
 /// magnitude, and `0` otherwise.
 ///
@@ -354,5 +390,40 @@ mod tests {
     fn region_edge_node_all_zero_returns_false() {
         let mag = vec![0.0f32; 12];
         assert!(!is_region_edge_node(Some(&mag), 0, 0, 3, 4));
+    }
+
+    // --- FindScndryNode ---
+
+    #[test]
+    fn find_secondary_node_hit() {
+        let nodes = vec![
+            NodeSupp::new(0, 0),
+            NodeSupp::new(1, 2),
+            NodeSupp::new(3, 4),
+        ];
+        assert_eq!(find_secondary_node_index(&nodes, 1, 2), Some(1));
+    }
+
+    #[test]
+    fn find_secondary_node_miss() {
+        let nodes = vec![NodeSupp::new(0, 0), NodeSupp::new(1, 2)];
+        assert_eq!(find_secondary_node_index(&nodes, 5, 5), None);
+    }
+
+    #[test]
+    fn find_secondary_node_first_element() {
+        let nodes = vec![NodeSupp::new(7, 8), NodeSupp::new(1, 2)];
+        assert_eq!(find_secondary_node_index(&nodes, 7, 8), Some(0));
+    }
+
+    #[test]
+    fn find_secondary_node_last_element() {
+        let nodes = vec![NodeSupp::new(0, 0), NodeSupp::new(9, 9)];
+        assert_eq!(find_secondary_node_index(&nodes, 9, 9), Some(1));
+    }
+
+    #[test]
+    fn find_secondary_node_empty_slice() {
+        assert_eq!(find_secondary_node_index(&[], 0, 0), None);
     }
 }

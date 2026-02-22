@@ -52,7 +52,7 @@ EvaluateTotalCost,3,
 ExtractFlow,4,
 FindApex,4,
 FindNumPathsOut,4,
-FindScndryNode,6,
+FindScndryNode,6,DONE
 finishup,6,NOT_PLANNED
 FlattenWrappedPhase,3,DONE
 FlipFlowArraySign,3,
