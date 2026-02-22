@@ -133,6 +133,37 @@ impl Default for SmoothCost {
     }
 }
 
+/// Incremental cost record for a single arc.
+///
+/// Equivalent to the C `incrcostT` struct. Each arc in the network flow graph
+/// stores the cost of incrementing flow in the positive direction (`poscost`)
+/// and the negative direction (`negcost`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct IncrCost {
+    pub poscost: i16,
+    pub negcost: i16,
+}
+
+impl IncrCost {
+    pub fn new(poscost: i16, negcost: i16) -> Self {
+        Self { poscost, negcost }
+    }
+
+    /// Returns the incremental cost for the given arc direction.
+    ///
+    /// This is the idiomatic Rust equivalent of the C `GetCost()` function.
+    /// If `arcdir` is positive the forward (positive) cost is returned;
+    /// otherwise the reverse (negative) cost is returned.
+    #[inline]
+    pub fn get_cost(&self, arcdir: i64) -> i16 {
+        if arcdir > 0 {
+            self.poscost
+        } else {
+            self.negcost
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +232,33 @@ mod tests {
             result,
             Err(MaskWeightsError::LengthMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn incr_cost_get_cost_positive_direction() {
+        let ic = IncrCost::new(42, -10);
+        assert_eq!(ic.get_cost(1), 42);
+        assert_eq!(ic.get_cost(5), 42);
+    }
+
+    #[test]
+    fn incr_cost_get_cost_negative_direction() {
+        let ic = IncrCost::new(42, -10);
+        assert_eq!(ic.get_cost(-1), -10);
+        assert_eq!(ic.get_cost(-99), -10);
+    }
+
+    #[test]
+    fn incr_cost_get_cost_zero_direction_returns_negcost() {
+        // The C code uses `if(arcdir>0)`, so zero maps to the else branch.
+        let ic = IncrCost::new(42, -10);
+        assert_eq!(ic.get_cost(0), -10);
+    }
+
+    #[test]
+    fn incr_cost_default_is_zero() {
+        let ic = IncrCost::default();
+        assert_eq!(ic.poscost, 0);
+        assert_eq!(ic.negcost, 0);
     }
 }

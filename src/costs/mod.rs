@@ -16,5 +16,6 @@ pub use gradients::{
     compute_range_gradients,
 };
 pub use types::{
-    Cost, MaskWeightsError, SmoothCost, mask_cost, mask_prespecified_arc_costs, mask_smooth_cost,
+    Cost, IncrCost, MaskWeightsError, SmoothCost, mask_cost, mask_prespecified_arc_costs,
+    mask_smooth_cost,
 };

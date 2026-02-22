@@ -62,7 +62,7 @@ Get2DMem,7,NOT_PLANNED
 Get2DRowColMem,6,NOT_PLANNED
 Get2DRowColZeroMem,7,NOT_PLANNED
 GetArcNumLims,6,
-GetCost,6,
+GetCost,6,DONE
 GetIntensityAndCorrelation,4,
 GetNLines,1,
 GridNodeMaskStatus,6,
