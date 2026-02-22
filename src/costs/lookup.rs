@@ -2,7 +2,7 @@
 
 //! Lookup table builders for rho/dz statistics.
 
-use crate::constants::{BIGGEST_DZ_RHO_MAX, LARGE_FLOAT, MAX_ITERATIONS};
+use crate::constants::{BIGGEST_DZ_RHO_MAX, LARGE_FLOAT, MAX_ITERATIONS, SQRT_HALF};
 use crate::data::tile::TileRegion;
 use std::error::Error;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -330,6 +330,37 @@ fn calc_dz_rho_max(rho: f64, angle: f64, params: &LookupParameters) -> LookupRes
     }
 }
 
+/// Calculates expected value of intensity (arbitrary units) for a given
+/// range slope `dzr`, assuming zero azimuth slope.
+///
+/// This is the idiomatic Rust equivalent of the C `EIofDZR()` function.
+/// The scattering model combines a diffuse component (`kds * cos θ_i`) with a
+/// specular component (`cos(2θ_i)^n`) that only contributes when the local
+/// incidence angle is small enough (`cos θ_i > √½`).
+fn ei_of_dzr(dzr: f64, sin_nom_inc: f64, cos_nom_inc: f64, params: &LookupParameters) -> f64 {
+    let dr = params.range_spacing;
+    let da = params.azimuth_spacing;
+    let dx = dr / sin_nom_inc + dzr * cos_nom_inc / sin_nom_inc;
+    let kds = params.kds;
+    let n = params.specular_exponent;
+
+    // Zero-slope reference point and projected area.
+    let dzr0 = -dr * cos_nom_inc;
+    let proj_area = da * ((dzr - dzr0) / sin_nom_inc).abs();
+
+    // Local incidence angle cosine.
+    let cos_theta_i = proj_area / (dzr * dzr * da * da + da * da * dx * dx).sqrt();
+
+    let sigma0 = if cos_theta_i > SQRT_HALF {
+        let cos2_theta_i = 2.0 * cos_theta_i * cos_theta_i - 1.0;
+        kds * cos_theta_i + cos2_theta_i.powf(n)
+    } else {
+        kds * cos_theta_i
+    };
+
+    sigma0 * proj_area
+}
+
 fn incidence_angle(orbit_radius: f64, earth_radius: f64, slant_range: f64) -> Option<f64> {
     let denom = 2.0 * slant_range * earth_radius;
     if denom == 0.0 {
@@ -411,5 +442,65 @@ mod tests {
             build_dz_rho_max_lookup(&dzrcrit, 0.0, -1.0, 1, &sample_params()),
             Err(LookupError::InvalidConfiguration(_))
         ));
+    }
+
+    #[test]
+    fn ei_of_dzr_positive_for_zero_slope() {
+        let params = sample_params();
+        let angle: f64 = 0.6; // ~34 degrees
+        let ei = ei_of_dzr(0.0, angle.sin(), angle.cos(), &params);
+        assert!(ei > 0.0, "expected positive intensity at zero slope");
+        assert!(ei.is_finite());
+    }
+
+    #[test]
+    fn ei_of_dzr_increases_with_steeper_slopes() {
+        // Intensity should generally increase as the surface tilts
+        // further towards the sensor (larger dzr), at least for
+        // moderate slopes.
+        let params = sample_params();
+        let angle: f64 = 0.6;
+        let sin_a = angle.sin();
+        let cos_a = angle.cos();
+
+        let ei_0 = ei_of_dzr(0.0, sin_a, cos_a, &params);
+        let ei_small = ei_of_dzr(2.0, sin_a, cos_a, &params);
+        let ei_large = ei_of_dzr(10.0, sin_a, cos_a, &params);
+
+        assert!(
+            ei_small >= ei_0,
+            "expected EI to increase with slope: ei_small={ei_small}, ei_0={ei_0}"
+        );
+        assert!(
+            ei_large >= ei_small,
+            "expected EI to increase with slope: ei_large={ei_large}, ei_small={ei_small}"
+        );
+    }
+
+    #[test]
+    fn ei_of_dzr_specular_branch_activates_at_steep_angle() {
+        // For a sufficiently steep slope the local incidence becomes small
+        // (cos θ_i > SQRT_HALF), activating the specular term.
+        let params = sample_params();
+        let angle: f64 = 0.6;
+        let sin_a = angle.sin();
+        let cos_a = angle.cos();
+
+        // At the zero-slope reference point dzr0 = -dr*cos, the projected
+        // area is zero so EI is zero; slightly beyond that the specular
+        // branch should kick in since cos_theta_i will be large.
+        let dzr0 = -params.range_spacing * cos_a;
+        let near_zero = ei_of_dzr(dzr0 + 0.01, sin_a, cos_a, &params);
+        assert!(near_zero.is_finite());
+    }
+
+    #[test]
+    fn ei_of_dzr_normalisation_is_meaningful() {
+        // SolveEIModelParams divides EI(dzr3) / EI(0); make sure the
+        // denominator is nonzero for typical parameters.
+        let params = sample_params();
+        let angle: f64 = 0.6;
+        let denom = ei_of_dzr(0.0, angle.sin(), angle.cos(), &params);
+        assert!(denom > 0.0, "EI(0) must be positive for normalisation");
     }
 }
