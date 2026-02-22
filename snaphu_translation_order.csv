@@ -171,8 +171,8 @@ SolveDZRCrit,6,DONE
 SolveEIModelParams,5,DONE
 SolveMST,4,
 StartTimers,2,
-StringToDouble,4,
-StringToLong,4,
+StringToDouble,4,DONE
+StringToLong,4,DONE
 StrNCopy,8,NOT_PLANNED
 ThickenCosts,4,
 TraceRegions,3,
