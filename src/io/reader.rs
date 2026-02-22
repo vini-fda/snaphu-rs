@@ -3,7 +3,7 @@
 //! File-reading helpers for rasters and metadata.
 
 use crate::constants::TWO_PI_F32;
-use crate::data::ops::{non_neg_data_array, valid_data_array};
+use crate::data::ops::{flip_phase_array_sign, non_neg_data_array, valid_data_array};
 use crate::data::raster::Raster;
 use std::ffi::OsString;
 use std::fs::File;
@@ -20,6 +20,27 @@ pub enum RasterFileFormat {
     FloatData,
     AltSampleData,
     AltLineData,
+}
+
+/// Supported file encodings for optional magnitude-file overrides.
+///
+/// C `ReadMagnitude()` accepts the same set used by primary input reads,
+/// including complex-valued files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MagnitudeFileFormat {
+    FloatData,
+    ComplexData,
+    AltSampleData,
+    AltLineData,
+}
+
+/// Edge-mask thresholds used by `read_byte_mask` (`ReadByteMask` equivalent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeMaskParams {
+    pub top: usize,
+    pub bottom: usize,
+    pub left: usize,
+    pub right: usize,
 }
 
 /// File configuration for intensity reads (`ReadIntensity` equivalent).
@@ -568,6 +589,123 @@ pub fn read_complex_file(
         Raster::new(window.ncol, window.nrow, mag_data),
         Raster::new(window.ncol, window.nrow, phase_data),
     ))
+}
+
+/// Optionally read interferogram magnitude from an auxiliary file.
+///
+/// This is the idiomatic Rust equivalent of C `ReadMagnitude()`.
+pub fn read_magnitude(
+    mag: &mut Raster<f32>,
+    magfile: Option<&Path>,
+    magfile_format: MagnitudeFileFormat,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+) -> io::Result<()> {
+    let Some(path) = magfile else {
+        return Ok(());
+    };
+
+    let loaded_mag = match magfile_format {
+        MagnitudeFileFormat::FloatData => read_2d_array::<f32>(path, line_len, nlines, window)?,
+        MagnitudeFileFormat::ComplexData => {
+            let (m, _phase) = read_complex_file(path, line_len, nlines, window)?;
+            m
+        }
+        MagnitudeFileFormat::AltLineData => {
+            let (m, _phase) = read_alt_line_file(path, line_len, nlines, window)?;
+            m
+        }
+        MagnitudeFileFormat::AltSampleData => {
+            let (m, _other) = read_alt_samp_file(path, line_len, nlines, window)?;
+            m
+        }
+    };
+
+    *mag = loaded_mag;
+    Ok(())
+}
+
+/// Apply byte-mask and edge-mask constraints to magnitude data.
+///
+/// This is the idiomatic Rust equivalent of C `ReadByteMask()`.
+pub fn read_byte_mask(
+    mag: &mut Raster<f32>,
+    bytemaskfile: Option<&Path>,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+    edge_mask: EdgeMaskParams,
+) -> io::Result<()> {
+    if mag.width != window.ncol || mag.height != window.nrow {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "magnitude raster dimensions must match tile window",
+        ));
+    }
+
+    let bytemask = if let Some(path) = bytemaskfile {
+        Some(read_2d_array::<i8>(path, line_len, nlines, window)?)
+    } else {
+        None
+    };
+
+    for row in 0..window.nrow {
+        for col in 0..window.ncol {
+            let full_row = window.first_row + row;
+            let full_col = window.first_col + col;
+            let masked = bytemask
+                .as_ref()
+                .is_some_and(|m| m.data[row * window.ncol + col] == 0)
+                || full_row < edge_mask.top
+                || full_col < edge_mask.left
+                || full_row >= nlines.saturating_sub(edge_mask.bottom)
+                || full_col >= line_len.saturating_sub(edge_mask.right);
+            if masked {
+                mag.data[row * window.ncol + col] = 0.0;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Read the coarse unwrapped-phase estimate from disk.
+///
+/// This is the idiomatic Rust equivalent of C `ReadUnwrappedEstimateFile()`.
+pub fn read_unwrapped_estimate_file(
+    estfile: &Path,
+    estfile_format: RasterFileFormat,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+    flip_phase_sign: bool,
+) -> io::Result<Raster<f32>> {
+    let mut estimate = match estfile_format {
+        RasterFileFormat::AltLineData => {
+            read_alt_line_file_phase(estfile, line_len, nlines, window)?
+        }
+        RasterFileFormat::FloatData => read_2d_array::<f32>(estfile, line_len, nlines, window)?,
+        RasterFileFormat::AltSampleData => {
+            let (_dummy, est) = read_alt_samp_file(estfile, line_len, nlines, window)?;
+            est
+        }
+    };
+
+    if !valid_data_array(&estimate.data, estimate.height, estimate.width) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Infinity or NaN found in file {}", estfile.display()),
+        ));
+    }
+
+    flip_phase_array_sign(
+        &mut estimate.data,
+        estimate.height,
+        estimate.width,
+        flip_phase_sign,
+    );
+    Ok(estimate)
 }
 
 /// Read brightness/intensity inputs, optionally from two files.
@@ -1493,6 +1631,117 @@ mod tests {
         let err = read_weights_file(None, 8, 8, TileWindow::new(0, 0, 0, 3)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(err.to_string().contains("at least 1x1"));
+    }
+
+    #[test]
+    fn read_magnitude_overrides_from_complex_file() {
+        let path = temp_file("snaphu_rs_read_magnitude_complex");
+        let mut fp = File::create(&path).unwrap();
+        // 2x2 complex samples: (3,4), (0,2), (5,12), (8,15)
+        let samples = [(3.0f32, 4.0f32), (0.0, 2.0), (5.0, 12.0), (8.0, 15.0)];
+        for (re, im) in samples {
+            fp.write_all(&re.to_ne_bytes()).unwrap();
+            fp.write_all(&im.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let mut mag = Raster::new(2, 2, vec![1.0f32; 4]);
+        read_magnitude(
+            &mut mag,
+            Some(&path),
+            MagnitudeFileFormat::ComplexData,
+            2,
+            2,
+            TileWindow::new(0, 0, 2, 2),
+        )
+        .unwrap();
+        assert_eq!(mag.data, vec![5.0, 2.0, 13.0, 17.0]);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_byte_mask_applies_file_and_edge_constraints() {
+        let path = temp_file("snaphu_rs_read_byte_mask");
+        let mut fp = File::create(&path).unwrap();
+        // 3x4 signed-byte mask, one interior pixel masked out.
+        let mask = [1i8, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1];
+        for v in mask {
+            fp.write_all(&(v as u8).to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let mut mag = Raster::new(4, 3, vec![1.0f32; 12]);
+        read_byte_mask(
+            &mut mag,
+            Some(&path),
+            4,
+            3,
+            TileWindow::new(0, 0, 3, 4),
+            EdgeMaskParams {
+                top: 1,
+                bottom: 1,
+                left: 1,
+                right: 1,
+            },
+        )
+        .unwrap();
+
+        // Only interior pixels row=1,col=1..2 can survive edge masking.
+        assert_eq!(mag.data[1 * 4 + 1], 1.0);
+        assert_eq!(mag.data[1 * 4 + 2], 0.0); // masked by byte-mask file
+        // Border samples must be zero.
+        assert_eq!(mag.data[0], 0.0);
+        assert_eq!(mag.data[3], 0.0);
+        assert_eq!(mag.data[8], 0.0);
+        assert_eq!(mag.data[11], 0.0);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_unwrapped_estimate_file_reads_and_flips_float_data() {
+        let path = temp_file("snaphu_rs_read_unw_est");
+        let mut fp = File::create(&path).unwrap();
+        let values = [1.0f32, -2.0, 3.0, 4.0];
+        for v in values {
+            fp.write_all(&v.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let est = read_unwrapped_estimate_file(
+            &path,
+            RasterFileFormat::FloatData,
+            2,
+            2,
+            TileWindow::new(0, 0, 2, 2),
+            true,
+        )
+        .unwrap();
+        assert_eq!(est.data, vec![-1.0, 2.0, -3.0, -4.0]);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_unwrapped_estimate_file_rejects_nan_values() {
+        let path = temp_file("snaphu_rs_read_unw_est_nan");
+        let mut fp = File::create(&path).unwrap();
+        let values = [0.0f32, f32::NAN, 1.0, 2.0];
+        for v in values {
+            fp.write_all(&v.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let err = read_unwrapped_estimate_file(
+            &path,
+            RasterFileFormat::FloatData,
+            2,
+            2,
+            TileWindow::new(0, 0, 2, 2),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("Infinity or NaN"));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

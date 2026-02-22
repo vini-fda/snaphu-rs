@@ -91,7 +91,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Flow/residue helpers (`CalcFlow`, `CycleResidue`, `NodeResidue`, `IntegratePhase`, `ExtractFlow`, `FlipFlowArraySign`) are now implemented in `data::ops` with row/column-layout parity tests.
    - ✅ Region-growing cost smoother `ThickenCosts` now exists in `costs::types`, preserving row/column arc convolution and `LARGESHORT` clipping semantics.
    - ✅ EI/intensity helpers (`RemoveMean`, `SolveEIModelParams`) are now translated with typed Rust APIs (`data::ops` + `costs::lookup`) and validation coverage.
-   - ✅ IO wrappers (`ReadIntensity`, `ReadCorrelation`, `Write2DArray`, `Write2DRowColArray`, `WriteAltLineFile`, `WriteAltSampFile`) now exist as safe typed readers/writers in `io::{reader,writer}`.
+   - ✅ IO wrappers (`ReadMagnitude`, `ReadByteMask`, `ReadUnwrappedEstimateFile`, `ReadIntensity`, `ReadCorrelation`, `Write2DArray`, `Write2DRowColArray`, `WriteAltLineFile`, `WriteAltSampFile`) now exist as safe typed readers/writers in `io::{reader,writer}`.
    - ✅ Additional graph helpers (`ClosestNode`, `RegionsNeighborNode`, `ScanRegion`, `CheckLeaf`, `CheckBoundary`) are now available in `network::mod` with explicit traversal/consistency tests.
    - ✅ Network topology selectors (`SetGridNetworkFunctionPointers`, `SetNonGridNetworkFunctionPointers`) are represented in `network::mod` with explicit typed mode selection.
    - ✅ `TraceSecondaryArc` now has a typed translation in `unwrapping::tiles`, split into cost-profile tracing and secondary-graph registration helpers, with convergence/zero-cost/reuse path tests.
