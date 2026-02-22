@@ -28,3 +28,9 @@ pub const TWO_PI: f64 = std::f64::consts::TAU;
 
 /// Two-π as `f32`, avoiding repeated casts in tight loops.
 pub const TWO_PI_F32: f32 = std::f32::consts::TAU;
+
+/// Number of directional arms used by the `Despeckle` filter.
+pub const NARMS: usize = 8;
+
+/// Length of each arm (in pixels) for the `Despeckle` filter.
+pub const ARMLEN: usize = 5;

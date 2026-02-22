@@ -37,7 +37,7 @@ cs_init,6,
 cs2,5,
 cs2mcfparse,5,
 CycleResidue,4,
-Despeckle,5,
+Despeckle,5,DONE
 discharge,7,
 DischargeBoundary,4,
 DischargeTree,4,
@@ -57,10 +57,10 @@ finishup,6,
 FlattenWrappedPhase,3,DONE
 FlipFlowArraySign,3,
 FlipPhaseArraySign,4,
-Free2DArray,6,
-Get2DMem,7,
-Get2DRowColMem,6,
-Get2DRowColZeroMem,7,
+Free2DArray,6,NOT_PLANNED
+Get2DMem,7,NOT_PLANNED
+Get2DRowColMem,6,NOT_PLANNED
+Get2DRowColZeroMem,7,NOT_PLANNED
 GetArcNumLims,6,
 GetCost,6,
 GetIntensityAndCorrelation,4,
@@ -77,13 +77,13 @@ InitNodes,4,
 InitTree,4,
 IntegratePhase,4,
 IntegrateSecondaryFlows,3,
-IsFalse,5,
-IsFinite,7,
+IsFalse,5,DONE
+IsFinite,7,DONE
 IsRegionArc,6,
 IsRegionEdgeArc,5,
 IsRegionEdgeNode,5,
 IsRegionInteriorArc,5,
-IsTrue,5,
+IsTrue,5,DONE
 LClip,6,DONE
 LinInterp1D,6,DONE
 LinInterp2D,5,DONE
@@ -135,7 +135,7 @@ ReadMagnitude,3,
 ReadNextRegion,3,
 ReadUnwrappedEstimateFile,3,
 ReadWeightsFile,4,
-ReAlloc,6,
+ReAlloc,6,NOT_PLANNED
 ReCalcCost,4,
 refine,6,
 RegionsNeighborNode,5,
@@ -147,7 +147,7 @@ run_main,0,
 ScanRegion,5,
 SelectConnNodeSource,4,
 SelectSources,3,
-Set2DShortArray,5,
+Set2DShortArray,5,DONE
 SetBooleanSignedChar,4,
 SetDefaults,1,
 SetDumpAll,1,
@@ -165,7 +165,7 @@ SetUpperEdge,4,
 SetupTile,4,
 SetupTreeSolveNetwork,3,
 SetVerboseOut,1,
-Short2DRowColAbsMax,5,
+Short2DRowColAbsMax,5,DONE
 SolveCS2,4,
 SolveDZRCrit,6,DONE
 SolveEIModelParams,5,

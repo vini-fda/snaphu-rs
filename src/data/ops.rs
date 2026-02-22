@@ -2,7 +2,7 @@
 
 //! Standalone numeric helpers translated from the SNAPHU leaf utilities.
 
-use crate::constants::{LARGE_SHORT, LARGE_SHORT_I32, PI, TWO_PI};
+use crate::constants::{ARMLEN, LARGE_SHORT, LARGE_SHORT_I32, NARMS, PI, TWO_PI};
 
 /// Adds the values of two 2-D arrays (stored in row-major order) elementwise.
 ///
@@ -341,6 +341,171 @@ pub fn mod_diff(f1: f64, f2: f64) -> f64 {
     diff
 }
 
+/// Fills every element of a 2-D `i16` array with `value`.
+///
+/// Equivalent of the C `Set2DShortArray`.
+pub fn set_2d_short_array(arr: &mut [i16], rows: usize, cols: usize, value: i16) {
+    validate_len(arr.len(), rows, cols);
+    arr.fill(value);
+}
+
+/// Returns the maximum absolute value across a "row-col" flow/cost array.
+///
+/// The array uses SNAPHU's standard grid-network layout:
+///   - rows `[0, nrow-1)`: row arcs, each with `ncol` entries
+///   - rows `[nrow-1, 2*nrow-1)`: col arcs, each with `ncol-1` entries
+///
+/// Equivalent of the C `Short2DRowColAbsMax`.
+pub fn short_2d_row_col_abs_max(arr: &[i16], nrow: usize, ncol: usize) -> i64 {
+    assert!(nrow >= 1 && ncol >= 1, "dimensions must be at least 1");
+    let row_arc_count = (nrow - 1) * ncol;
+    let col_arc_count = nrow * (ncol - 1);
+    assert_eq!(
+        arr.len(),
+        row_arc_count + col_arc_count,
+        "array length does not match row-col layout"
+    );
+
+    let mut max_val: i64 = 0;
+
+    // Row arcs: first (nrow-1) rows, ncol columns each
+    for &v in &arr[..row_arc_count] {
+        let abs = (v as i64).abs();
+        if abs > max_val {
+            max_val = abs;
+        }
+    }
+
+    // Col arcs: next nrow rows, (ncol-1) columns each
+    for &v in &arr[row_arc_count..] {
+        let abs = (v as i64).abs();
+        if abs > max_val {
+            max_val = abs;
+        }
+    }
+
+    max_val
+}
+
+/// Adaptive geometric (directional) despeckle filter for magnitude data.
+///
+/// Filters using 8 directional arms of length `ARMLEN` around each pixel.
+/// For each nonzero pixel the arm pair with the highest anisotropy ratio
+/// is selected, preserving linear features while smoothing noise. Zero
+/// pixels are preserved as-is (to honour mask information in the input).
+///
+/// Returns the filtered output as a new flat row-major `Vec<f32>`.
+///
+/// Equivalent of the C `Despeckle`.
+pub fn despeckle(mag: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    validate_len(mag.len(), rows, cols);
+
+    let mut output = vec![0.0f32; rows * cols];
+
+    // Mirror-pad the magnitude raster by ARMLEN in both directions.
+    let padded = mirror_pad(mag, rows, cols, ARMLEN, ARMLEN)
+        .expect("Despeckling box size too large for input array size");
+    let padded_cols = cols + 2 * ARMLEN;
+
+    // Diagonal arm geometry tables (from the C source).
+    let jmin: [usize; 5] = [2, 2, 0, 1, 2];
+    let jmax: [usize; 5] = [2, 3, 4, 3, 2];
+
+    // Arm indices: C=0, T=1, B=2, R=3, L=4, TR=5, BL=6, TL=7, BR=8
+    const C: usize = 0;
+    const T: usize = 1;
+    const B: usize = 2;
+    const R: usize = 3;
+    const L: usize = 4;
+    const TR: usize = 5;
+    const BL: usize = 6;
+    const TL: usize = 7;
+    const BR: usize = 8;
+
+    for row in 0..rows {
+        let i_row = row + ARMLEN;
+        for col in 0..cols {
+            let i_col = col + ARMLEN;
+
+            // Preserve zeros (mask info).
+            if padded[i_row * padded_cols + i_col] == 0.0 {
+                output[row * cols + col] = 0.0;
+                continue;
+            }
+
+            let mut w = [0.0f64; NARMS + 1];
+
+            // Center 3×3 block
+            for di in -1i32..=1 {
+                for dj in -1i32..=1 {
+                    let r = (i_row as i32 + di) as usize;
+                    let c = (i_col as i32 + dj) as usize;
+                    w[C] += padded[r * padded_cols + c] as f64;
+                }
+            }
+
+            // Four straight arms (T, B, L, R)
+            for di in -1i32..=1 {
+                for j in 2..(ARMLEN as i32 + 1) {
+                    let r = i_row as i32;
+                    let c = i_col as i32;
+                    w[T] += padded[((r - j) as usize) * padded_cols + (c + di) as usize] as f64;
+                    w[B] += padded[((r + j) as usize) * padded_cols + (c + di) as usize] as f64;
+                    w[L] += padded[((r + di) as usize) * padded_cols + (c - j) as usize] as f64;
+                    w[R] += padded[((r + di) as usize) * padded_cols + (c + j) as usize] as f64;
+                }
+            }
+
+            // Four diagonal arms (TR, BR, BL, TL)
+            for i in 0..5usize {
+                for j in jmin[i]..=jmax[i] {
+                    let r = i_row;
+                    let c = i_col;
+                    w[TR] += padded[(r - i) * padded_cols + (c + j)] as f64;
+                    w[BR] += padded[(r + i) * padded_cols + (c + j)] as f64;
+                    w[BL] += padded[(r + i) * padded_cols + (c - j)] as f64;
+                    w[TL] += padded[(r - i) * padded_cols + (c - j)] as f64;
+                }
+            }
+
+            // Full diamond weight
+            let mut wfull = w[C] + w[T] + w[R] + w[B] + w[L];
+            for i in 2i32..5 {
+                for j in 2i32..(7 - i) {
+                    let r = i_row as i32;
+                    let c = i_col as i32;
+                    wfull += padded[(r + i) as usize * padded_cols + (c + j) as usize] as f64;
+                    wfull += padded[(r - i) as usize * padded_cols + (c + j) as usize] as f64;
+                    wfull += padded[(r + i) as usize * padded_cols + (c - j) as usize] as f64;
+                    wfull += padded[(r - i) as usize * padded_cols + (c - j) as usize] as f64;
+                }
+            }
+
+            // Select arm pair with highest anisotropy ratio
+            let mut ratio_max = 1.0f64;
+            // k iterates over opposite arm pairs: (T,B), (L,R), (TR,BL), (TL,BR)
+            let mut k = 1;
+            while k <= NARMS {
+                let wstick = w[C] + w[k] + w[k + 1];
+                let complement = wfull - wstick;
+                if complement > 0.0 {
+                    let mut ratio = wstick / complement;
+                    if ratio < 1.0 {
+                        ratio = 1.0 / ratio;
+                    }
+                    if ratio > ratio_max {
+                        ratio_max = ratio;
+                        output[row * cols + col] = wstick as f32;
+                    }
+                }
+                k += 2;
+            }
+        }
+    }
+
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,5 +695,63 @@ mod tests {
         assert!((diff - std::f64::consts::PI).abs() < 1e-12);
         let diff = mod_diff(-3.5 * std::f64::consts::PI, 0.0);
         assert!((diff + 1.5 * std::f64::consts::PI).abs() < 1e-12);
+    }
+
+    #[test]
+    fn set_2d_short_array_fills_all_elements() {
+        let mut arr = vec![0i16; 12];
+        set_2d_short_array(&mut arr, 3, 4, 42);
+        assert!(arr.iter().all(|&v| v == 42));
+    }
+
+    #[test]
+    fn set_2d_short_array_handles_negative_fill() {
+        let mut arr = vec![1i16; 6];
+        set_2d_short_array(&mut arr, 2, 3, -7);
+        assert!(arr.iter().all(|&v| v == -7));
+    }
+
+    #[test]
+    fn short_2d_row_col_abs_max_finds_maximum() {
+        // 3 rows, 3 cols → row arcs: 2*3=6, col arcs: 3*2=6, total=12
+        let mut arr = vec![0i16; 12];
+        arr[3] = -50; // row arc region
+        arr[9] = 42; // col arc region
+        assert_eq!(short_2d_row_col_abs_max(&arr, 3, 3), 50);
+    }
+
+    #[test]
+    fn short_2d_row_col_abs_max_all_zeros() {
+        // 2 rows, 3 cols → row arcs: 1*3=3, col arcs: 2*2=4, total=7
+        let arr = vec![0i16; 7];
+        assert_eq!(short_2d_row_col_abs_max(&arr, 2, 3), 0);
+    }
+
+    #[test]
+    fn despeckle_preserves_zeros() {
+        // A raster of all zeros should produce all zeros.
+        let mag = vec![0.0f32; 36];
+        let result = despeckle(&mag, 6, 6);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn despeckle_filters_nonzero_pixels() {
+        // A uniform nonzero raster should produce nonzero outputs.
+        let rows = 12;
+        let cols = 12;
+        let mag = vec![1.0f32; rows * cols];
+        let result = despeckle(&mag, rows, cols);
+        // All interior pixels should get a nonzero filtered value.
+        for row in 1..rows - 1 {
+            for col in 1..cols - 1 {
+                assert!(
+                    result[row * cols + col] > 0.0,
+                    "expected nonzero at ({}, {})",
+                    row,
+                    col
+                );
+            }
+        }
     }
 }
