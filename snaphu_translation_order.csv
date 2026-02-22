@@ -122,7 +122,7 @@ Read2DArray,6,DONE
 Read2DRowColFile,5,
 Read2DRowColFileRows,4,
 ReadAltLineFile,6,DONE
-ReadAltLineFilePhase,6,
+ReadAltLineFilePhase,6,DONE
 ReadAltSampFile,6,
 ReadByteMask,3,
 ReadComplexFile,4,

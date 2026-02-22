@@ -82,6 +82,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Output-file opener `OpenOutputFile` now lives in `io::writer` with `/tmp` fallback semantics, real-path reporting, and regression tests for primary/fallback/error paths.
    - ✅ Generic raster loader `Read2DArray` now exists in `io::reader` as a typed native-endian tile reader (`TileWindow` + `Raster<T>`), with bounds/size checks and file-layout regression tests.
    - ✅ Alternating-line raster loader `ReadAltLineFile` now lives in `io::reader`, returning typed magnitude/phase tiles with the original seek/stride layout and validation rules.
+   - ✅ Phase-only alternating-line reader `ReadAltLineFilePhase` is implemented in `io::reader`, preserving the C phase-offset and row-stride semantics with typed `Raster<f32>` output.
    - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
     - Group remaining Priority ≥5 helpers into clearer buckets so they can be tackled incrementally:
       * Memory allocators / deallocators (Get2DMem, Free2DArray, Read/Write2D) – replace with Vec-backed helpers or document why to skip)
