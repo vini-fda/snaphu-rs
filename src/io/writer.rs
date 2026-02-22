@@ -9,12 +9,89 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 const DEFAULT_DUMP_PATH: &str = "/tmp/";
+const DUMP_INITFILE: &str = "snaphu.init";
+const DUMP_FLOWFILE: &str = "snaphu.flow";
+const DUMP_EIFILE: &str = "snaphu.ei";
+const DUMP_ROWCOSTFILE: &str = "snaphu.rowcost";
+const DUMP_COLCOSTFILE: &str = "snaphu.colcost";
+const DUMP_MSTROWCOSTFILE: &str = "snaphu.mstrowcost";
+const DUMP_MSTCOLCOSTFILE: &str = "snaphu.mstcolcost";
+const DUMP_MSTCOSTSFILE: &str = "snaphu.mstcosts";
+const DUMP_CORRDUMPFILE: &str = "snaphu.corr";
+const DUMP_RAWCORRDUMPFILE: &str = "snaphu.rawcorr";
 
 #[derive(Debug)]
 pub struct OpenedOutputFile {
     pub file: File,
     pub real_path: PathBuf,
     pub fell_back: bool,
+}
+
+/// Output format selector for final unwrapped products.
+///
+/// Mirrors C `outfileformat` values used by `WriteOutputFile()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFileFormat {
+    AltLineData,
+    AltSampleData,
+    FloatData,
+    Unknown,
+}
+
+/// Collection of optional intermediate dump-file names.
+///
+/// Mirrors the fields that C `SetDumpAll()` populates.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DumpOutputFiles {
+    pub initfile: Option<PathBuf>,
+    pub flowfile: Option<PathBuf>,
+    pub eifile: Option<PathBuf>,
+    pub rowcostfile: Option<PathBuf>,
+    pub colcostfile: Option<PathBuf>,
+    pub mstrowcostfile: Option<PathBuf>,
+    pub mstcolcostfile: Option<PathBuf>,
+    pub mstcostsfile: Option<PathBuf>,
+    pub corrdumpfile: Option<PathBuf>,
+    pub rawcorrdumpfile: Option<PathBuf>,
+}
+
+/// Populate dump-file names when debug dumping is enabled.
+///
+/// This is the idiomatic Rust equivalent of C `SetDumpAll()`.
+pub fn set_dump_all(outfiles: &mut DumpOutputFiles, dumpall: bool) {
+    if !dumpall {
+        return;
+    }
+    if outfiles.initfile.is_none() {
+        outfiles.initfile = Some(PathBuf::from(DUMP_INITFILE));
+    }
+    if outfiles.flowfile.is_none() {
+        outfiles.flowfile = Some(PathBuf::from(DUMP_FLOWFILE));
+    }
+    if outfiles.eifile.is_none() {
+        outfiles.eifile = Some(PathBuf::from(DUMP_EIFILE));
+    }
+    if outfiles.rowcostfile.is_none() {
+        outfiles.rowcostfile = Some(PathBuf::from(DUMP_ROWCOSTFILE));
+    }
+    if outfiles.colcostfile.is_none() {
+        outfiles.colcostfile = Some(PathBuf::from(DUMP_COLCOSTFILE));
+    }
+    if outfiles.mstrowcostfile.is_none() {
+        outfiles.mstrowcostfile = Some(PathBuf::from(DUMP_MSTROWCOSTFILE));
+    }
+    if outfiles.mstcolcostfile.is_none() {
+        outfiles.mstcolcostfile = Some(PathBuf::from(DUMP_MSTCOLCOSTFILE));
+    }
+    if outfiles.mstcostsfile.is_none() {
+        outfiles.mstcostsfile = Some(PathBuf::from(DUMP_MSTCOSTSFILE));
+    }
+    if outfiles.corrdumpfile.is_none() {
+        outfiles.corrdumpfile = Some(PathBuf::from(DUMP_CORRDUMPFILE));
+    }
+    if outfiles.rawcorrdumpfile.is_none() {
+        outfiles.rawcorrdumpfile = Some(PathBuf::from(DUMP_RAWCORRDUMPFILE));
+    }
 }
 
 /// Open a file for writing, falling back to `/tmp/<basename>` if needed.
@@ -58,6 +135,36 @@ pub fn open_output_file(outfile: &Path) -> io::Result<OpenedOutputFile> {
                     ),
                 )),
             }
+        }
+    }
+}
+
+/// Write the final unwrapped output in the requested encoding.
+///
+/// This is the idiomatic Rust equivalent of C `WriteOutputFile()`.
+pub fn write_output_file(
+    mag: &Raster<f32>,
+    unwrapped_phase: &Raster<f32>,
+    outfile: &Path,
+    outfile_format: OutputFileFormat,
+) -> io::Result<PathBuf> {
+    match outfile_format {
+        OutputFileFormat::AltLineData => write_alt_line_file(mag, unwrapped_phase, outfile),
+        OutputFileFormat::AltSampleData => write_alt_samp_file(mag, unwrapped_phase, outfile),
+        OutputFileFormat::FloatData => write_2d_array(
+            &unwrapped_phase.data,
+            unwrapped_phase.height,
+            unwrapped_phase.width,
+            outfile,
+        ),
+        OutputFileFormat::Unknown => {
+            log::warn!("Illegal format specified for output file; using default float format");
+            write_2d_array(
+                &unwrapped_phase.data,
+                unwrapped_phase.height,
+                unwrapped_phase.width,
+                outfile,
+            )
         }
     }
 }
@@ -364,6 +471,28 @@ mod tests {
     }
 
     #[test]
+    fn set_dump_all_sets_defaults_only_when_enabled() {
+        let mut out = DumpOutputFiles::default();
+        set_dump_all(&mut out, false);
+        assert!(out.initfile.is_none());
+
+        set_dump_all(&mut out, true);
+        assert_eq!(out.initfile, Some(PathBuf::from("snaphu.init")));
+        assert_eq!(out.flowfile, Some(PathBuf::from("snaphu.flow")));
+        assert_eq!(out.rawcorrdumpfile, Some(PathBuf::from("snaphu.rawcorr")));
+    }
+
+    #[test]
+    fn set_dump_all_preserves_existing_names() {
+        let mut out = DumpOutputFiles {
+            flowfile: Some(PathBuf::from("custom.flow")),
+            ..DumpOutputFiles::default()
+        };
+        set_dump_all(&mut out, true);
+        assert_eq!(out.flowfile, Some(PathBuf::from("custom.flow")));
+    }
+
+    #[test]
     fn log_string_param_writes_value_or_empty_comment() {
         let mut buf = Vec::<u8>::new();
         log_string_param(&mut buf, "OUTFILE", "snaphu.out").unwrap();
@@ -446,6 +575,27 @@ mod tests {
         assert_eq!(tile.col_arcs.data, col_arcs.data);
 
         fs::remove_file(written).unwrap();
+    }
+
+    #[test]
+    fn write_output_file_routes_by_format() {
+        let mag = Raster::new(2, 2, vec![1.0f32, 2.0, 3.0, 4.0]);
+        let phase = Raster::new(2, 2, vec![10.0f32, 20.0, 30.0, 40.0]);
+
+        let path1 =
+            std::env::temp_dir().join(format!("snaphu_write_output_{}.f32", unique_suffix()));
+        let p1 = write_output_file(&mag, &phase, &path1, OutputFileFormat::FloatData).unwrap();
+        let round = read_2d_array::<f32>(&p1, 2, 2, TileWindow::new(0, 0, 2, 2)).unwrap();
+        assert_eq!(round.data, phase.data);
+        fs::remove_file(p1).unwrap();
+
+        let path2 =
+            std::env::temp_dir().join(format!("snaphu_write_output_{}.alt", unique_suffix()));
+        let p2 = write_output_file(&mag, &phase, &path2, OutputFileFormat::AltLineData).unwrap();
+        let (rm, rp) = read_alt_line_file(&p2, 2, 2, TileWindow::new(0, 0, 2, 2)).unwrap();
+        assert_eq!(rm.data, mag.data);
+        assert_eq!(rp.data, phase.data);
+        fs::remove_file(p2).unwrap();
     }
 
     #[test]

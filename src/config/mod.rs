@@ -5,6 +5,9 @@
 pub mod defaults;
 
 use core::ffi::c_long;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 
 /// Placeholder for the eventual full configuration structure.
 #[derive(Debug, Clone, Default)]
@@ -98,9 +101,137 @@ pub fn set_boolean_signed_char(boolptr: &mut i8, input: &str) -> bool {
     }
 }
 
+/// Parsed key/value pair from a configuration line.
+///
+/// This is the typed Rust equivalent of the tokenized `(str1, str2)` state in
+/// C `ParseConfigLine()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigEntry {
+    pub key: String,
+    pub value: String,
+}
+
+/// Parse one SNAPHU config line into a key/value pair.
+///
+/// This is the idiomatic Rust equivalent of C `ParseConfigLine()`'s token
+/// extraction logic (comment stripping + whitespace tokenization).
+/// Returns `Ok(None)` for blank/comment-only lines.
+pub fn parse_config_line(line: &str) -> io::Result<Option<ConfigEntry>> {
+    let uncommented = line.split('#').next().unwrap_or_default().trim();
+    if uncommented.is_empty() {
+        return Ok(None);
+    }
+
+    let mut parts = uncommented.split_whitespace();
+    let Some(key) = parts.next() else {
+        return Ok(None);
+    };
+    let Some(value) = parts.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("missing value for parameter {key}"),
+        ));
+    };
+    if parts.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("too many tokens for parameter {key}"),
+        ));
+    }
+
+    Ok(Some(ConfigEntry {
+        key: key.to_string(),
+        value: value.to_string(),
+    }))
+}
+
+/// Read and parse a SNAPHU-style configuration file.
+///
+/// This is the idiomatic Rust equivalent of C `ReadConfigFile()`.
+pub fn read_config_file(path: &Path) -> io::Result<Vec<ConfigEntry>> {
+    let fp = File::open(path)?;
+    let reader = BufReader::new(fp);
+    let mut entries = Vec::new();
+    for (idx, line_res) in reader.lines().enumerate() {
+        let line = line_res?;
+        match parse_config_line(&line) {
+            Ok(Some(entry)) => entries.push(entry),
+            Ok(None) => {}
+            Err(err) => {
+                return Err(io::Error::new(
+                    err.kind(),
+                    format!("{}:{}: {}", path.display(), idx + 1, err),
+                ));
+            }
+        }
+    }
+    Ok(entries)
+}
+
+/// Metadata written at the top of a config log file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigLogHeader {
+    pub program_name: String,
+    pub version: String,
+    pub hostname: Option<String>,
+    pub parent_pid: u32,
+    pub cwd: Option<PathBuf>,
+    pub command_line: Vec<String>,
+}
+
+/// Write runtime parameters to a SNAPHU-compatible config log file.
+///
+/// This is the idiomatic Rust equivalent of C `WriteConfigLogFile()`.
+/// If `logfile` is `None`, no file is written and `Ok(None)` is returned.
+pub fn write_config_log_file(
+    logfile: Option<&Path>,
+    header: &ConfigLogHeader,
+    entries: &[ConfigEntry],
+) -> io::Result<Option<PathBuf>> {
+    let Some(path) = logfile else {
+        return Ok(None);
+    };
+
+    let mut fp = File::create(path)?;
+    writeln!(fp, "# {} v{}", header.program_name, header.version)?;
+    if let Some(hostname) = &header.hostname {
+        writeln!(fp, "# Host name: {hostname}")?;
+    } else {
+        writeln!(fp, "# Could not determine host name")?;
+    }
+    writeln!(fp, "# PID {}", header.parent_pid)?;
+    if let Some(cwd) = &header.cwd {
+        writeln!(fp, "# Current working directory: {}", cwd.display())?;
+    } else {
+        writeln!(fp, "# Could not determine current working directory")?;
+    }
+    write!(fp, "# Command line call:")?;
+    for arg in &header.command_line {
+        write!(fp, " {arg}")?;
+    }
+    writeln!(fp)?;
+    writeln!(fp)?;
+
+    for entry in entries {
+        writeln!(fp, "{}  {}", entry.key, entry.value)?;
+    }
+    fp.flush()?;
+    Ok(Some(path.to_path_buf()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_suffix() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!("{}_{}", std::process::id(), nanos)
+    }
 
     #[test]
     fn is_true_accepts_all_truthy_variants() {
@@ -186,5 +317,77 @@ mod tests {
         let mut value = 7;
         assert!(set_boolean_signed_char(&mut value, "maybe"));
         assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn parse_config_line_handles_comments_and_empty_lines() {
+        assert_eq!(parse_config_line("   # comment only").unwrap(), None);
+        assert_eq!(parse_config_line("").unwrap(), None);
+
+        let parsed = parse_config_line("INFILE  wrapped.bin   # trailing").unwrap();
+        assert_eq!(
+            parsed,
+            Some(ConfigEntry {
+                key: "INFILE".to_string(),
+                value: "wrapped.bin".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn parse_config_line_rejects_missing_or_extra_tokens() {
+        assert!(parse_config_line("INFILE").is_err());
+        assert!(parse_config_line("INFILE wrapped.bin extra").is_err());
+    }
+
+    #[test]
+    fn read_config_file_parses_valid_entries() {
+        let path = std::env::temp_dir().join(format!("snaphu_cfg_{}.conf", unique_suffix()));
+        fs::write(
+            &path,
+            "INFILE wrapped.bin\n# comment\nLINELENGTH 1024\nOUTFILE out.bin\n",
+        )
+        .unwrap();
+
+        let entries = read_config_file(&path).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].key, "INFILE");
+        assert_eq!(entries[0].value, "wrapped.bin");
+        assert_eq!(entries[1].key, "LINELENGTH");
+        assert_eq!(entries[2].key, "OUTFILE");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn write_config_log_file_writes_header_and_entries() {
+        let path = std::env::temp_dir().join(format!("snaphu_cfglog_{}.log", unique_suffix()));
+        let header = ConfigLogHeader {
+            program_name: "snaphu".to_string(),
+            version: "2.0.7".to_string(),
+            hostname: Some("host".to_string()),
+            parent_pid: 1234,
+            cwd: Some(PathBuf::from("/tmp")),
+            command_line: vec!["snaphu".to_string(), "wrapped.bin".to_string()],
+        };
+        let entries = vec![
+            ConfigEntry {
+                key: "INFILE".to_string(),
+                value: "wrapped.bin".to_string(),
+            },
+            ConfigEntry {
+                key: "OUTFILE".to_string(),
+                value: "snaphu.out".to_string(),
+            },
+        ];
+
+        let written = write_config_log_file(Some(&path), &header, &entries)
+            .unwrap()
+            .unwrap();
+        let text = fs::read_to_string(&written).unwrap();
+        assert!(text.contains("# snaphu v2.0.7"));
+        assert!(text.contains("# PID 1234"));
+        assert!(text.contains("INFILE  wrapped.bin"));
+        assert!(text.contains("OUTFILE  snaphu.out"));
+        fs::remove_file(written).unwrap();
     }
 }

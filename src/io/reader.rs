@@ -2,8 +2,10 @@
 
 //! File-reading helpers for rasters and metadata.
 
-use crate::constants::TWO_PI_F32;
-use crate::data::ops::{flip_phase_array_sign, non_neg_data_array, valid_data_array};
+use crate::constants::{LARGE_SHORT, TWO_PI_F32};
+use crate::data::ops::{
+    extract_flow, flip_phase_array_sign, non_neg_data_array, valid_data_array, wrap_phase,
+};
 use crate::data::raster::Raster;
 use std::ffi::OsString;
 use std::fs::File;
@@ -53,6 +55,184 @@ pub fn get_n_lines(
         ));
     }
     Ok(filesize / line_bytes)
+}
+
+/// Input-read settings for wrapped/unwrapped raster ingestion.
+///
+/// This is the typed Rust equivalent of the C arguments consumed by
+/// `ReadInputFile()`.
+#[derive(Debug, Clone)]
+pub struct InputReadSpec {
+    pub infile: PathBuf,
+    pub unwrapped: bool,
+    pub infile_format: InputFileFormat,
+    pub unwrapped_infile_format: RasterFileFormat,
+    pub flip_phase_sign: bool,
+}
+
+/// Output bundle produced by [`read_input_file`].
+#[derive(Debug, Clone)]
+pub struct InputReadData {
+    pub mag: Raster<f32>,
+    pub wrapped_phase: Raster<f32>,
+    pub flows: Option<Vec<i16>>,
+}
+
+/// Read wrapped or unwrapped input interferogram data.
+///
+/// This is the idiomatic Rust equivalent of C `ReadInputFile()`.
+pub fn read_input_file(
+    spec: &InputReadSpec,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+) -> io::Result<InputReadData> {
+    if window.ncol > LARGE_SHORT as usize || window.nrow > LARGE_SHORT as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "one or more interferogram dimensions too large",
+        ));
+    }
+    if window.ncol < 2 || window.nrow < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "input interferogram must be at least 2x2",
+        ));
+    }
+
+    if !spec.unwrapped {
+        let (mut mag_opt, mut wrapped_phase) = match spec.infile_format {
+            InputFileFormat::ComplexData => {
+                let (m, w) = read_complex_file(&spec.infile, line_len, nlines, window)?;
+                (Some(m), w)
+            }
+            InputFileFormat::AltLineData => {
+                let (m, w) = read_alt_line_file(&spec.infile, line_len, nlines, window)?;
+                (Some(m), w)
+            }
+            InputFileFormat::AltSampleData => {
+                let (m, w) = read_alt_samp_file(&spec.infile, line_len, nlines, window)?;
+                (Some(m), w)
+            }
+            InputFileFormat::FloatData => (
+                None,
+                read_2d_array::<f32>(&spec.infile, line_len, nlines, window)?,
+            ),
+        };
+
+        if !valid_data_array(
+            &wrapped_phase.data,
+            wrapped_phase.height,
+            wrapped_phase.width,
+        ) || mag_opt
+            .as_ref()
+            .is_some_and(|m| !valid_data_array(&m.data, m.height, m.width))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "NaN or infinity found in input float data",
+            ));
+        }
+        if mag_opt
+            .as_ref()
+            .is_some_and(|m| !non_neg_data_array(&m.data, m.height, m.width))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "negative magnitude found in input magnitude data",
+            ));
+        }
+
+        flip_phase_array_sign(
+            &mut wrapped_phase.data,
+            wrapped_phase.height,
+            wrapped_phase.width,
+            spec.flip_phase_sign,
+        );
+        wrap_phase(
+            &mut wrapped_phase.data,
+            wrapped_phase.height,
+            wrapped_phase.width,
+        );
+
+        let mag = mag_opt.take().unwrap_or_else(|| {
+            Raster::new(
+                window.ncol,
+                window.nrow,
+                vec![1.0f32; window.nrow * window.ncol],
+            )
+        });
+
+        Ok(InputReadData {
+            mag,
+            wrapped_phase,
+            flows: None,
+        })
+    } else {
+        let (mut mag_opt, mut unwrapped_phase) = match spec.unwrapped_infile_format {
+            RasterFileFormat::AltLineData => {
+                let (m, u) = read_alt_line_file(&spec.infile, line_len, nlines, window)?;
+                (Some(m), u)
+            }
+            RasterFileFormat::AltSampleData => {
+                let (m, u) = read_alt_samp_file(&spec.infile, line_len, nlines, window)?;
+                (Some(m), u)
+            }
+            RasterFileFormat::FloatData => (
+                None,
+                read_2d_array::<f32>(&spec.infile, line_len, nlines, window)?,
+            ),
+        };
+
+        if !valid_data_array(
+            &unwrapped_phase.data,
+            unwrapped_phase.height,
+            unwrapped_phase.width,
+        ) || mag_opt
+            .as_ref()
+            .is_some_and(|m| !valid_data_array(&m.data, m.height, m.width))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "NaN or infinity found in input float data",
+            ));
+        }
+        if mag_opt
+            .as_ref()
+            .is_some_and(|m| !non_neg_data_array(&m.data, m.height, m.width))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "negative magnitude found in input magnitude data",
+            ));
+        }
+
+        flip_phase_array_sign(
+            &mut unwrapped_phase.data,
+            unwrapped_phase.height,
+            unwrapped_phase.width,
+            spec.flip_phase_sign,
+        );
+        let (wrapped_phase, flows) = extract_flow(
+            &unwrapped_phase.data,
+            unwrapped_phase.height,
+            unwrapped_phase.width,
+        );
+
+        let mag = mag_opt.take().unwrap_or_else(|| {
+            Raster::new(
+                window.ncol,
+                window.nrow,
+                vec![1.0f32; window.nrow * window.ncol],
+            )
+        });
+
+        Ok(InputReadData {
+            mag,
+            wrapped_phase: Raster::new(window.ncol, window.nrow, wrapped_phase),
+            flows: Some(flows),
+        })
+    }
 }
 
 /// Supported on-disk raster encodings used by the legacy SNAPHU readers.
@@ -1960,6 +2140,56 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("extra data in file"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_input_file_wrapped_float_defaults_mag_to_unity() {
+        let path = temp_file("snaphu_rs_read_input_wrapped");
+        let mut fp = File::create(&path).unwrap();
+        let values = [0.25f32, 1.25, 2.25, 3.25];
+        for v in values {
+            fp.write_all(&v.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let spec = InputReadSpec {
+            infile: path.clone(),
+            unwrapped: false,
+            infile_format: InputFileFormat::FloatData,
+            unwrapped_infile_format: RasterFileFormat::FloatData,
+            flip_phase_sign: false,
+        };
+        let out = read_input_file(&spec, 2, 2, TileWindow::new(0, 0, 2, 2)).unwrap();
+        assert_eq!(out.mag.data, vec![1.0f32; 4]);
+        assert_eq!(out.wrapped_phase.data, vec![0.25, 1.25, 2.25, 3.25]);
+        assert!(out.flows.is_none());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_input_file_unwrapped_float_extracts_flow() {
+        let path = temp_file("snaphu_rs_read_input_unwrapped");
+        let mut fp = File::create(&path).unwrap();
+        let vals = [0.0f32, std::f32::consts::TAU, 0.0f32, std::f32::consts::TAU];
+        for v in vals {
+            fp.write_all(&v.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let spec = InputReadSpec {
+            infile: path.clone(),
+            unwrapped: true,
+            infile_format: InputFileFormat::FloatData,
+            unwrapped_infile_format: RasterFileFormat::FloatData,
+            flip_phase_sign: false,
+        };
+        let out = read_input_file(&spec, 2, 2, TileWindow::new(0, 0, 2, 2)).unwrap();
+        assert_eq!(out.mag.data, vec![1.0f32; 4]);
+        assert!(out.wrapped_phase.data.iter().all(|v| v.abs() < 1e-5));
+        let flows = out.flows.expect("expected extracted flows");
+        assert_eq!(flows.len(), 4);
+        assert_eq!(flows, vec![0, 0, 1, 1]);
         fs::remove_file(path).unwrap();
     }
 

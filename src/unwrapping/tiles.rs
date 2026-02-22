@@ -6,6 +6,7 @@
 //! primitives used during tiled unwrapping (`TraceSecondaryArc` in C).
 
 use crate::data::ops::l_round;
+use crate::data::tile::TileRegion;
 use crate::io::reader::parse_filename;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -18,6 +19,15 @@ const ZERO_COST_ARC: i64 = -LARGE_INT;
 const MAX_OFFSET_REFINEMENTS: usize = 64;
 const TMP_TILE_DIR_ROOT: &str = "snaphu_tiles_";
 const TILE_INIT_FILE_ROOT: &str = "snaphu_tileinit_";
+
+/// Tile-grid parameters needed to compute non-overlapping read windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileReadSettings {
+    pub row_overlap: usize,
+    pub col_overlap: usize,
+    pub ntilerow: usize,
+    pub ntilecol: usize,
+}
 
 /// Create a temporary directory used for tile artifacts.
 ///
@@ -63,6 +73,47 @@ pub fn set_tile_init_outfile(outfile: &Path, pid: u32) -> io::Result<PathBuf> {
     }
 
     Ok(tile_init)
+}
+
+/// Set parameters for reading the non-overlapping interior of one tile.
+///
+/// This is the idiomatic Rust equivalent of C `SetTileReadParams()`.
+pub fn set_tile_read_params(
+    next_tile_nlines: usize,
+    next_tile_linelen: usize,
+    tilerow: usize,
+    tilecol: usize,
+    settings: TileReadSettings,
+) -> TileRegion {
+    let first_row = if tilerow == 0 {
+        0
+    } else {
+        settings.row_overlap.div_ceil(2)
+    };
+    let row_trim_tail = if tilerow != settings.ntilerow.saturating_sub(1) {
+        settings.row_overlap / 2
+    } else {
+        0
+    };
+    let rows = next_tile_nlines
+        .saturating_sub(first_row)
+        .saturating_sub(row_trim_tail);
+
+    let first_col = if tilecol == 0 {
+        0
+    } else {
+        settings.col_overlap.div_ceil(2)
+    };
+    let col_trim_tail = if tilecol != settings.ntilecol.saturating_sub(1) {
+        settings.col_overlap / 2
+    } else {
+        0
+    };
+    let cols = next_tile_linelen
+        .saturating_sub(first_col)
+        .saturating_sub(col_trim_tail);
+
+    TileRegion::new(first_row, first_col, rows, cols)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,6 +571,46 @@ mod tests {
 
         fs::remove_file(computed).unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn set_tile_read_params_trims_overlap_for_interior_tiles() {
+        let region = set_tile_read_params(
+            20,
+            30,
+            1,
+            2,
+            TileReadSettings {
+                row_overlap: 5,
+                col_overlap: 6,
+                ntilerow: 3,
+                ntilecol: 4,
+            },
+        );
+        assert_eq!(region.first_row, 3); // ceil(5/2)
+        assert_eq!(region.first_col, 3); // ceil(6/2)
+        assert_eq!(region.rows, 15); // 20 - ceil(5/2) - floor(5/2)
+        assert_eq!(region.cols, 24); // 30 - ceil(6/2) - floor(6/2)
+    }
+
+    #[test]
+    fn set_tile_read_params_keeps_edge_tiles_untrimmed_on_outer_side() {
+        let region = set_tile_read_params(
+            12,
+            10,
+            0,
+            0,
+            TileReadSettings {
+                row_overlap: 4,
+                col_overlap: 4,
+                ntilerow: 2,
+                ntilecol: 2,
+            },
+        );
+        assert_eq!(region.first_row, 0);
+        assert_eq!(region.first_col, 0);
+        assert_eq!(region.rows, 10);
+        assert_eq!(region.cols, 8);
     }
 
     #[test]
