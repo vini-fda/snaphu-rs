@@ -65,8 +65,8 @@ GetArcNumLims,6,
 GetCost,6,DONE
 GetIntensityAndCorrelation,4,
 GetNLines,1,
-GridNodeMaskStatus,6,
-GroundMaskStatus,6,
+GridNodeMaskStatus,6,DONE
+GroundMaskStatus,6,DONE
 GrowConnCompsMask,3,
 GrowRegions,3,
 InitBoundary,4,

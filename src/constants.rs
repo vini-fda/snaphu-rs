@@ -29,6 +29,10 @@ pub const TWO_PI: f64 = std::f64::consts::TAU;
 /// Two-π as `f32`, avoiding repeated casts in tight loops.
 pub const TWO_PI_F32: f32 = std::f32::consts::TAU;
 
+/// Group value indicating a node whose surrounding pixels are all masked (zero
+/// magnitude). Mirrors the C `MASKED` macro (`-5`).
+pub const MASKED: i32 = -5;
+
 /// Number of directional arms used by the `Despeckle` filter.
 pub const NARMS: usize = 8;
 
