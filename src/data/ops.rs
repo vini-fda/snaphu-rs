@@ -112,6 +112,16 @@ pub fn l_clip(value: i32, min: i32, max: i32) -> i32 {
     }
 }
 
+/// Equivalent of the C `LRound` helper (round-to-nearest with ties -> even).
+pub fn l_round(value: f64) -> i64 {
+    value.round_ties_even() as i64
+}
+
+/// Returns the minimum of two `i64` values (`LMin` from the C sources).
+pub fn l_min(a: i64, b: i64) -> i64 {
+    a.min(b)
+}
+
 /// Mirror pads a 2-D array by `pad_rows`/`pad_cols` while reflecting edges.
 ///
 /// Returns `None` if the requested padding would exceed the array dimensions,
@@ -355,6 +365,26 @@ mod tests {
         assert_eq!(l_clip(5, 0, 10), 5);
         assert_eq!(l_clip(-1, 0, 10), 0);
         assert_eq!(l_clip(15, 0, 10), 10);
+    }
+
+    #[test]
+    fn l_round_matches_rint_semantics() {
+        assert_eq!(l_round(1.2), 1);
+        assert_eq!(l_round(1.8), 2);
+        assert_eq!(l_round(-1.2), -1);
+        assert_eq!(l_round(-1.8), -2);
+        // Halfway cases round to even, mirroring C's `rint` helper.
+        assert_eq!(l_round(1.5), 2);
+        assert_eq!(l_round(2.5), 2);
+        assert_eq!(l_round(-1.5), -2);
+        assert_eq!(l_round(-2.5), -2);
+    }
+
+    #[test]
+    fn l_min_returns_smallest_value() {
+        assert_eq!(l_min(5, 10), 5);
+        assert_eq!(l_min(-3, -7), -7);
+        assert_eq!(l_min(0, 0), 0);
     }
 
     #[test]

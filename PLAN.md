@@ -69,6 +69,7 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
    - ✅ Wrapped-gradient calculators (`CalcWrappedRangeDiffs/AzDiffs`) have idiomatic equivalents in `costs::gradients`, exposing typed outputs for cost builders and reusing the shared boxcar/mirror-pad helpers.
    - ✅ Masking helpers (`MaskCost`, `MaskSmoothCost`, `MaskPrespecifiedArcCosts`) are available in `costs::types` along with strongly typed cost records, so future modules can drop the pointer-heavy c2rust shims.
    - ✅ Mirror padding now has a `mirror_pad_with_fill` variant that works for any `Copy` type, so non-f32 rasters (e.g. shorts, custom structs) can reuse the same primitive.
+   - ✅ Miscellaneous Level ≥5 math helpers (`LRound`, `LMin`) now live alongside `l_clip` so the rest of the cost code can stop calling into the legacy module.
    - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
 3. **Cost builders (Priority 4)**
    - Implement `BuildStatCosts*` in `costs` module, ensuring they only depend on previously translated helpers and `RuntimeState` slices.
