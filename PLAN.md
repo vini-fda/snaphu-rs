@@ -57,9 +57,9 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
    - `complex_writer` now lives under `examples/complex_writer.rs` with a clap-powered CLI (`--width/--height`, `--wraps`, `--snaphu-bin`, `--snaphu-arg`, `--skip-snaphu`, `--rerun`, `--write-png`). Running `cargo run --example complex_writer -- …` emits `wrapped_phase.bin`, `snaphu.out`, and (optionally) a PNG preview inside `target/examples/complex_writer/`.
    - The tool accepts a configurable SNAPHU binary path instead of relying on a hard-coded absolute path, and forwards extra arguments so we can exercise different C features while gathering fixtures.
    - Rerun logging, PNG dumps, and README instructions are in place, so the example doubles as a visualization harness and a reproducible dataset generator for parity tests.
-1. **Project scaffolding**
-   - Move the c2rust translation behind a feature flag (`legacy-cli`) so the new crate can compile during the rewrite. Make sure the code is disabled because (src/snaphu_full.rs) has a LOT of lines of code, which slows downs compile times.
-   - Create placeholders for the modules listed above with minimal structs and TODOs.
+1. **Project scaffolding** *(DONE)*
+   - The c2rust translation now sits behind the `legacy-cli` feature gate and the crate compiles quickly with `--no-default-features`, giving us a clean slate for the idiomatic rewrite.
+   - Placeholder modules (`cli`, `config`, `context`, `data`, `costs`, `network`, `unwrapping`, `io`) exist with minimal structs so the new architecture can be filled in incrementally.
 2. **Leaf utilities (Priority ≥5)**
    - Follow CSV entries to flesh out pure helpers: arithmetic kernels (`Add2DFloatArrays`, `BoxCarAvg`), lookup-table builders (`BuildDZRCritLookupTable`, `BuildDZRhoMaxLookupTable`), data structure helpers (`BucketInsert/Remove`, `AvgSigSq`).
    - Write unit tests that mirror known equations, enabling quick confirmation without the entire pipeline.
