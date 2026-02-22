@@ -14,9 +14,59 @@ pub fn read_phase_file(_path: &std::path::Path) {
     // TODO: implement.
 }
 
+/// Determine the number of lines in an input raster based on file size.
+///
+/// This is the idiomatic Rust equivalent of C `GetNLines()`.
+pub fn get_n_lines(
+    infile: &Path,
+    line_len: usize,
+    unwrapped: bool,
+    infile_format: InputFileFormat,
+    unwrapped_infile_format: InputFileFormat,
+) -> io::Result<usize> {
+    if line_len == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "line length must be greater than zero",
+        ));
+    }
+
+    let filesize = std::fs::metadata(infile)?.len() as usize;
+    let effective_format = if unwrapped {
+        unwrapped_infile_format
+    } else {
+        infile_format
+    };
+    let datasize = match effective_format {
+        InputFileFormat::FloatData => std::mem::size_of::<f32>(),
+        InputFileFormat::ComplexData
+        | InputFileFormat::AltLineData
+        | InputFileFormat::AltSampleData => 2 * std::mem::size_of::<f32>(),
+    };
+    let line_bytes = line_len
+        .checked_mul(datasize)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "line-size overflow"))?;
+    if filesize % line_bytes != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("extra data in file {} (bad linelength?)", infile.display()),
+        ));
+    }
+    Ok(filesize / line_bytes)
+}
+
 /// Supported on-disk raster encodings used by the legacy SNAPHU readers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RasterFileFormat {
+    FloatData,
+    AltSampleData,
+    AltLineData,
+}
+
+/// File encodings accepted by C `GetNLines()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputFileFormat {
+    ComplexData,
     FloatData,
     AltSampleData,
     AltLineData,
@@ -392,6 +442,31 @@ pub fn read_alt_line_file_phase(
     }
 
     Ok(Raster::new(window.ncol, window.nrow, phase_data))
+}
+
+/// Create or load a tile mask that controls which tiles are unwrapped.
+///
+/// This is the idiomatic Rust equivalent of C `SetUpDoTileMask()`.
+/// If `dotilemaskfile` is `None`, the returned mask is filled with ones.
+pub fn set_up_do_tile_mask(
+    dotilemaskfile: Option<&Path>,
+    ntilerow: usize,
+    ntilecol: usize,
+) -> io::Result<Raster<i8>> {
+    let total = ntilerow
+        .checked_mul(ntilecol)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "tile-mask size overflow"))?;
+
+    if let Some(path) = dotilemaskfile {
+        read_2d_array::<i8>(
+            path,
+            ntilecol,
+            ntilerow,
+            TileWindow::new(0, 0, ntilerow, ntilecol),
+        )
+    } else {
+        Ok(Raster::new(ntilecol, ntilerow, vec![1i8; total]))
+    }
 }
 
 /// Read data from a file containing alternating float samples from two images:
@@ -1822,6 +1897,89 @@ mod tests {
         .unwrap();
         assert_eq!(corr.data, vec![20.0, 21.0, 22.0, 23.0]);
 
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn get_n_lines_for_float_input() {
+        let path = temp_file("snaphu_rs_get_n_lines_float");
+        let mut fp = File::create(&path).unwrap();
+        for value in 0..12u32 {
+            fp.write_all(&(value as f32).to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let nlines = get_n_lines(
+            &path,
+            4,
+            false,
+            InputFileFormat::FloatData,
+            InputFileFormat::FloatData,
+        )
+        .unwrap();
+        assert_eq!(nlines, 3);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn get_n_lines_for_non_float_input() {
+        let path = temp_file("snaphu_rs_get_n_lines_nonfloat");
+        let mut fp = File::create(&path).unwrap();
+        // 5 lines * 2 columns * 2 floats-per-sample = 20 floats
+        for value in 0..20u32 {
+            fp.write_all(&(value as f32).to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let nlines = get_n_lines(
+            &path,
+            2,
+            false,
+            InputFileFormat::AltLineData,
+            InputFileFormat::FloatData,
+        )
+        .unwrap();
+        assert_eq!(nlines, 5);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn get_n_lines_rejects_misaligned_size() {
+        let path = temp_file("snaphu_rs_get_n_lines_bad");
+        let mut fp = File::create(&path).unwrap();
+        fp.write_all(&[0u8; 13]).unwrap();
+        drop(fp);
+
+        let err = get_n_lines(
+            &path,
+            3,
+            false,
+            InputFileFormat::FloatData,
+            InputFileFormat::FloatData,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("extra data in file"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn set_up_do_tile_mask_defaults_to_all_ones() {
+        let mask = set_up_do_tile_mask(None, 2, 3).unwrap();
+        assert_eq!(mask.width, 3);
+        assert_eq!(mask.height, 2);
+        assert_eq!(mask.data, vec![1i8; 6]);
+    }
+
+    #[test]
+    fn set_up_do_tile_mask_reads_file_when_present() {
+        let path = temp_file("snaphu_rs_dotilemask");
+        let mut fp = File::create(&path).unwrap();
+        fp.write_all(&[1u8, 0u8, 255u8, 2u8]).unwrap();
+        drop(fp);
+
+        let mask = set_up_do_tile_mask(Some(&path), 2, 2).unwrap();
+        assert_eq!(mask.data, vec![1i8, 0, -1, 2]);
         fs::remove_file(path).unwrap();
     }
 

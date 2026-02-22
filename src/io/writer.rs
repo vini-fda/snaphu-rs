@@ -62,6 +62,56 @@ pub fn open_output_file(outfile: &Path) -> io::Result<OpenedOutputFile> {
     }
 }
 
+/// File-format values accepted by C `LogFileFormat()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoggedFileFormat {
+    ComplexData,
+    FloatData,
+    AltLineData,
+    AltSampleData,
+}
+
+/// Write one key/value line for a string parameter.
+///
+/// This is the idiomatic Rust equivalent of C `LogStringParam()`.
+/// Empty values are logged as a comment line.
+pub fn log_string_param<W: Write>(writer: &mut W, key: &str, value: &str) -> io::Result<()> {
+    if value.is_empty() {
+        writeln!(writer, "# Empty value for parameter {key}")?;
+    } else {
+        writeln!(writer, "{key}  {value}")?;
+        writer.flush()?;
+    }
+    Ok(())
+}
+
+/// Write one key/value line for a boolean parameter.
+///
+/// This is the idiomatic Rust equivalent of C `LogBoolParam()`.
+pub fn log_bool_param<W: Write>(writer: &mut W, key: &str, bool_value: bool) -> io::Result<()> {
+    let rendered = if bool_value { "TRUE" } else { "FALSE" };
+    writeln!(writer, "{key}  {rendered}")?;
+    Ok(())
+}
+
+/// Write one key/value line for an on-disk file format.
+///
+/// This is the idiomatic Rust equivalent of C `LogFileFormat()`.
+pub fn log_file_format<W: Write>(
+    writer: &mut W,
+    key: &str,
+    file_format: LoggedFileFormat,
+) -> io::Result<()> {
+    let rendered = match file_format {
+        LoggedFileFormat::ComplexData => "COMPLEX_DATA",
+        LoggedFileFormat::FloatData => "FLOAT_DATA",
+        LoggedFileFormat::AltLineData => "ALT_LINE_DATA",
+        LoggedFileFormat::AltSampleData => "ALT_SAMPLE_DATA",
+    };
+    writeln!(writer, "{key}  {rendered}")?;
+    Ok(())
+}
+
 pub fn write_phase_file(_path: &std::path::Path) {
     // TODO: implement.
 }
@@ -311,6 +361,39 @@ mod tests {
     fn open_output_file_invalid_root_path_errors() {
         let err = open_output_file(Path::new("/")).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn log_string_param_writes_value_or_empty_comment() {
+        let mut buf = Vec::<u8>::new();
+        log_string_param(&mut buf, "OUTFILE", "snaphu.out").unwrap();
+        log_string_param(&mut buf, "LOGFILE", "").unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            text,
+            "OUTFILE  snaphu.out\n# Empty value for parameter LOGFILE\n"
+        );
+    }
+
+    #[test]
+    fn log_bool_param_writes_true_false_literals() {
+        let mut buf = Vec::<u8>::new();
+        log_bool_param(&mut buf, "VERBOSE", true).unwrap();
+        log_bool_param(&mut buf, "INITONLY", false).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(text, "VERBOSE  TRUE\nINITONLY  FALSE\n");
+    }
+
+    #[test]
+    fn log_file_format_writes_expected_symbolic_name() {
+        let mut buf = Vec::<u8>::new();
+        log_file_format(&mut buf, "INFILEFORMAT", LoggedFileFormat::ComplexData).unwrap();
+        log_file_format(&mut buf, "OUTFILEFORMAT", LoggedFileFormat::AltLineData).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            text,
+            "INFILEFORMAT  COMPLEX_DATA\nOUTFILEFORMAT  ALT_LINE_DATA\n"
+        );
     }
 
     #[test]

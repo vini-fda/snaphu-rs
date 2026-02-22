@@ -6,11 +6,64 @@
 //! primitives used during tiled unwrapping (`TraceSecondaryArc` in C).
 
 use crate::data::ops::l_round;
+use crate::io::reader::parse_filename;
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
 const LARGE_INT: i64 = 2_000_000_000;
 const ZERO_COST_ARC: i64 = -LARGE_INT;
 const MAX_OFFSET_REFINEMENTS: usize = 64;
+const TMP_TILE_DIR_ROOT: &str = "snaphu_tiles_";
+const TILE_INIT_FILE_ROOT: &str = "snaphu_tileinit_";
+
+/// Create a temporary directory used for tile artifacts.
+///
+/// This is the idiomatic Rust equivalent of C `MakeTileDir()`.
+pub fn make_tile_dir(
+    tiledir: Option<&Path>,
+    outfile: &Path,
+    parent_pid: u32,
+) -> io::Result<PathBuf> {
+    let target = match tiledir {
+        Some(path) => path.to_path_buf(),
+        None => {
+            let (path, _) = parse_filename(outfile)?;
+            path.join(format!("{TMP_TILE_DIR_ROOT}{parent_pid}"))
+        }
+    };
+
+    if fs::metadata(&target).is_ok() {
+        return Ok(target);
+    }
+
+    fs::create_dir(&target)?;
+    Ok(target)
+}
+
+/// Build the temporary tile-init output filename and ensure it does not exist.
+///
+/// This is the idiomatic Rust equivalent of C `SetTileInitOutfile()`.
+pub fn set_tile_init_outfile(outfile: &Path, pid: u32) -> io::Result<PathBuf> {
+    let (path, basename) = parse_filename(outfile)?;
+    let mut tile_base = OsString::from(format!("{TILE_INIT_FILE_ROOT}{pid}_"));
+    tile_base.push(basename);
+    let tile_init = path.join(tile_base);
+
+    if fs::metadata(&tile_init).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "refusing to write tile init to existing file {}",
+                tile_init.display()
+            ),
+        ));
+    }
+
+    Ok(tile_init)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArcDirection {
@@ -418,6 +471,56 @@ pub fn assemble_tiles() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_suffix() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!("{}_{}", std::process::id(), nanos)
+    }
+
+    #[test]
+    fn make_tile_dir_creates_default_directory_near_output() {
+        let root = std::env::temp_dir().join(format!("snaphu_tiles_root_{}", unique_suffix()));
+        fs::create_dir_all(&root).unwrap();
+        let outfile = root.join("result.out");
+        let dir = make_tile_dir(None, &outfile, 12345).unwrap();
+
+        assert_eq!(dir, root.join("snaphu_tiles_12345"));
+        assert!(dir.exists());
+
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn make_tile_dir_returns_existing_path_without_recreating() {
+        let existing = std::env::temp_dir().join(format!("snaphu_tiles_exist_{}", unique_suffix()));
+        fs::create_dir_all(&existing).unwrap();
+        let out = make_tile_dir(Some(&existing), Path::new("ignored.out"), 7).unwrap();
+        assert_eq!(out, existing);
+        fs::remove_dir_all(out).unwrap();
+    }
+
+    #[test]
+    fn set_tile_init_outfile_builds_expected_name_and_rejects_existing_files() {
+        let root = std::env::temp_dir().join(format!("snaphu_tileinit_root_{}", unique_suffix()));
+        fs::create_dir_all(&root).unwrap();
+        let nominal = root.join("tile.out");
+        let computed = set_tile_init_outfile(&nominal, 4242).unwrap();
+        assert_eq!(computed, root.join("snaphu_tileinit_4242_tile.out"));
+
+        fs::write(&computed, b"already here").unwrap();
+        let err = set_tile_init_outfile(&nominal, 4242).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+
+        fs::remove_file(computed).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn trace_secondary_arc_costs_handles_zero_cost_arcs() {

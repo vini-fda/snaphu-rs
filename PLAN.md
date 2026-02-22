@@ -97,6 +97,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Tree/masking network helpers (`CheckMagMasking`, `MaskNodes`, `MaxNonMaskFlow`, `InitNodeNums`, `InitNodes`, `InitBuckets`, `MinOutCostNode`, `FindApex`, `ClipFlow`, `ClearBuckets`) are translated in `network::mod` with row/col-layout and bucket-state parity tests.
    - ✅ `TraceSecondaryArc` now has a typed translation in `unwrapping::tiles`, split into cost-profile tracing and secondary-graph registration helpers, with convergence/zero-cost/reuse path tests.
    - ✅ Config parsing helpers `StringToDouble`/`StringToLong`/`SetBooleanSignedChar` now live in `config::mod`, preserving SNAPHU's full-string parse checks, infinity/overflow guards, legacy empty-string edge behavior, and signed-char boolean assignment semantics.
+   - ✅ Runtime/configuration helpers (`CatchSignals`, `StartTimers`, `DisplayElapsedTime`, `LogStringParam`, `LogBoolParam`, `LogFileFormat`, `GetNLines`, `MakeTileDir`, `SetTileInitOutfile`, `SetUpDoTileMask`) are now translated across `cli`, `io::{reader,writer}`, and `unwrapping::tiles` with parity-oriented tests.
    - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
     - Group remaining Priority ≥5 helpers into clearer buckets so they can be tackled incrementally:
       * Memory allocators / deallocators (Get2DMem, Free2DArray, Read/Write2D) – replace with Vec-backed helpers or document why to skip)

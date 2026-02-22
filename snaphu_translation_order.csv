@@ -22,7 +22,7 @@ CalcInitMaxFlow,4,
 CalcWrappedAzDiffs,5,DONE
 CalcWrappedRangeDiffs,5,DONE
 CAlloc,8,NOT_PLANNED
-CatchSignals,2,
+CatchSignals,2,DONE
 CheckArcReducedCost,4,
 CheckBoundary,5,DONE
 CheckLeaf,5,DONE
@@ -41,7 +41,7 @@ Despeckle,5,DONE
 discharge,7,NOT_PLANNED
 DischargeBoundary,4,
 DischargeTree,4,
-DisplayElapsedTime,2,
+DisplayElapsedTime,2,DONE
 DumpIncrCostFiles,3,
 EIofDZR,6,DONE
 err_end,9,DONE
@@ -64,7 +64,7 @@ Get2DRowColZeroMem,7,NOT_PLANNED
 GetArcNumLims,6,DONE
 GetCost,6,DONE
 GetIntensityAndCorrelation,4,
-GetNLines,1,
+GetNLines,1,DONE
 GridNodeMaskStatus,6,DONE
 GroundMaskStatus,6,DONE
 GrowConnCompsMask,3,
@@ -88,11 +88,11 @@ LClip,6,DONE
 LinInterp1D,6,DONE
 LinInterp2D,5,DONE
 LMin,6,DONE
-LogBoolParam,2,
-LogFileFormat,2,
-LogStringParam,2,
+LogBoolParam,2,DONE
+LogFileFormat,2,DONE
+LogStringParam,2,DONE
 LRound,6,DONE
-MakeTileDir,2,
+MakeTileDir,2,DONE
 MAlloc,8,NOT_PLANNED
 MaskCost,5,DONE
 MaskNodes,3,DONE
@@ -157,9 +157,9 @@ SetLowerEdge,4,
 SetNonGridNetworkFunctionPointers,3,DONE
 SetRightEdge,4,
 SetStreamPointers,1,
-SetTileInitOutfile,2,
+SetTileInitOutfile,2,DONE
 SetTileReadParams,4,
-SetUpDoTileMask,2,
+SetUpDoTileMask,2,DONE
 SetupIncrFlowCosts,3,
 SetUpperEdge,4,
 SetupTile,4,
@@ -170,7 +170,7 @@ SolveCS2,4,
 SolveDZRCrit,6,DONE
 SolveEIModelParams,5,DONE
 SolveMST,4,
-StartTimers,2,
+StartTimers,2,DONE
 StringToDouble,4,DONE
 StringToLong,4,DONE
 StrNCopy,8,NOT_PLANNED
