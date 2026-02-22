@@ -60,9 +60,11 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
 1. **Project scaffolding** *(DONE)*
    - The c2rust translation now sits behind the `legacy-cli` feature gate and the crate compiles quickly with `--no-default-features`, giving us a clean slate for the idiomatic rewrite.
    - Placeholder modules (`cli`, `config`, `context`, `data`, `costs`, `network`, `unwrapping`, `io`) exist with minimal structs so the new architecture can be filled in incrementally.
-2. **Leaf utilities (Priority ≥5)**
-   - Follow CSV entries to flesh out pure helpers: arithmetic kernels (`Add2DFloatArrays`, `BoxCarAvg`), lookup-table builders (`BuildDZRCritLookupTable`, `BuildDZRhoMaxLookupTable`), data structure helpers (`BucketInsert/Remove`, `AvgSigSq`).
-   - Write unit tests that mirror known equations, enabling quick confirmation without the entire pipeline.
+2. **Leaf utilities (Priority ≥5)** *(IN PROGRESS)*
+   - ✅ Arithmetic kernels now live under `data::ops` with unit coverage for `Add2DFloatArrays`, `BoxCarAvg`, `AvgSigSq`, and `LClip`.
+   - ✅ Lookup-table builders `BuildDZRCritLookupTable` and `BuildDZRhoMaxLookupTable` are implemented in `costs::lookup` with typed parameter structs and smoke tests.
+   - ✅ Bucket helpers mirroring `BucketInsert/Remove` exist in `network::bucket` with invariants enforced by Rust errors/tests.
+   - Remaining work in this phase: mirror padding helpers (`MirrorPad`), wrapping utilities, interpolation helpers, and any other Level ≥5 entries in the CSV that upstream modules depend on.
 3. **Cost builders (Priority 4)**
    - Implement `BuildStatCosts*` in `costs` module, ensuring they only depend on previously translated helpers and `RuntimeState` slices.
    - Provide `CostField` structs to hold per-pixel arrays. Tests should read fixture rasters and verify deterministic bytes vs C output (use small 5×5 samples captured from the original binary).
