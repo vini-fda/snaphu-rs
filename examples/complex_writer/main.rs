@@ -385,6 +385,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.skip_snaphu {
         println!("Skipping snaphu execution (pass --skip-snaphu=false to run it).");
     } else {
+        if !args.snaphu_bin.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "snaphu binary '{}' not found; install it, pass --snaphu-bin <path>, or re-run with --skip-snaphu",
+                    args.snaphu_bin.display()
+                ),
+            )
+            .into());
+        }
+
         let (magnitudes, unwrapped_phase) = run_snaphu_and_read_products(
             &args.snaphu_bin,
             args.width,

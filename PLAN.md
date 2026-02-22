@@ -53,10 +53,10 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
 - Keep CS2-specific config (`MAXARCS`, scaling tolerances) expressed as Rust consts managed by the network module.
 
 ## Translation Workflow (driven by `snaphu_translation_order.csv`)
-0. **Prepare the `complex_writer` example**
-   - Move `complex_writer/` into the main workspace (or port its logic into `examples/complex_writer.rs`) so it builds with `cargo run --example complex_writer` and picks up shared dependencies.
-   - Remove the hard-coded `SNAPHU_PATH`; instead, accept a CLI flag (defaulting to `snaphu` on `$PATH` or the Rust binary under development) and document how to feed its outputs back into SNAPHU.
-   - Keep the IO + visualization utilities intact and add instructions for saving wrapped/unwrapped/magnitude rasters so they can seed the golden-fixture suite later in this plan.
+0. **Prepare the `complex_writer` example** *(DONE)*
+   - `complex_writer` now lives under `examples/complex_writer.rs` with a clap-powered CLI (`--width/--height`, `--wraps`, `--snaphu-bin`, `--snaphu-arg`, `--skip-snaphu`, `--rerun`, `--write-png`). Running `cargo run --example complex_writer -- …` emits `wrapped_phase.bin`, `snaphu.out`, and (optionally) a PNG preview inside `target/examples/complex_writer/`.
+   - The tool accepts a configurable SNAPHU binary path instead of relying on a hard-coded absolute path, and forwards extra arguments so we can exercise different C features while gathering fixtures.
+   - Rerun logging, PNG dumps, and README instructions are in place, so the example doubles as a visualization harness and a reproducible dataset generator for parity tests.
 1. **Project scaffolding**
    - Move the c2rust translation behind a feature flag (`legacy-cli`) so the new crate can compile during the rewrite. Make sure the code is disabled because (src/snaphu_full.rs) has a LOT of lines of code, which slows downs compile times.
    - Create placeholders for the modules listed above with minimal structs and TODOs.
