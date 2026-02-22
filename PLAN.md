@@ -53,6 +53,9 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
 - Keep CS2-specific config (`MAXARCS`, scaling tolerances) expressed as Rust consts managed by the network module.
 
 ## Translation Workflow (driven by `snaphu_translation_order.csv`)
+
+The CSV file `snaphu_translation_order.csv` contains a list of all the functions in the original SNAPHU C source code, topologically sorted by the call graph ordering. The "Priority" column in the CSV goes from 0 to 9, where the top-level functions in the call graph are 0, while the leaf nodes have priority 9.
+
 0. **Prepare the `complex_writer` example** *(DONE)*
    - `complex_writer` now lives under `examples/complex_writer.rs` with a clap-powered CLI (`--width/--height`, `--wraps`, `--snaphu-bin`, `--snaphu-arg`, `--skip-snaphu`, `--rerun`, `--write-png`). Running `cargo run --example complex_writer -- …` emits `wrapped_phase.bin`, `snaphu.out`, and (optionally) a PNG preview inside `target/examples/complex_writer/`.
    - The tool accepts a configurable SNAPHU binary path instead of relying on a hard-coded absolute path, and forwards extra arguments so we can exercise different C features while gathering fixtures.
