@@ -61,7 +61,7 @@ Free2DArray,6,NOT_PLANNED
 Get2DMem,7,NOT_PLANNED
 Get2DRowColMem,6,NOT_PLANNED
 Get2DRowColZeroMem,7,NOT_PLANNED
-GetArcNumLims,6,
+GetArcNumLims,6,DONE
 GetCost,6,DONE
 GetIntensityAndCorrelation,4,
 GetNLines,1,

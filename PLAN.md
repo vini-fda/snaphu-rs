@@ -78,6 +78,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Mirror padding now has a `mirror_pad_with_fill` variant that works for any `Copy` type, so non-f32 rasters (e.g. shorts, custom structs) can reuse the same primitive.
    - ✅ Miscellaneous Level ≥5 math helpers (`LRound`, `LMin`) now live alongside `l_clip` so the rest of the cost code can stop calling into the legacy module.
    - ✅ Array sanity helpers (`ValidDataArray`, `NonNegDataArray`) have idiomatic equivalents in `data::ops`, keeping the raster validators in one place.
+   - ✅ Network neighbor-loop helper `GetArcNumLims` now has a typed Rust equivalent in `network::mod` with explicit boundary-count validation and branch-coverage tests.
    - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
     - Group remaining Priority ≥5 helpers into clearer buckets so they can be tackled incrementally:
       * Memory allocators / deallocators (Get2DMem, Free2DArray, Read/Write2D) – replace with Vec-backed helpers or document why to skip)

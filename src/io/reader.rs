@@ -29,7 +29,7 @@ pub fn read_phase_file(_path: &std::path::Path) {
 /// ```
 /// # use std::path::Path;
 /// # use std::ffi::OsString;
-/// use snaphu::io::reader::parse_filename;
+/// use snaphu_rs::io::reader::parse_filename;
 ///
 /// let (dir, base) = parse_filename(Path::new("/data/output/result.bin")).unwrap();
 /// assert_eq!(dir, Path::new("/data/output/"));

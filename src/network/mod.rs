@@ -12,6 +12,60 @@ pub trait MinCostFlowSolver {
     fn solve(&mut self, graph: &TileGraph) -> Result<(), String>;
 }
 
+/// Error cases for translated network topology helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkError {
+    /// The caller requested boundary-node arc limits but did not supply
+    /// boundary neighbor counts.
+    MissingBoundaryNeighborCount,
+}
+
+/// Initial and ending values used by C-style neighbor scans.
+///
+/// C's `GetArcNumLims()` returned `arcnum` and wrote `upperarcnum` via an
+/// output pointer. The Rust equivalent returns both values together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArcNumLimits {
+    pub arcnum_start: i64,
+    pub upper_arcnum: i64,
+}
+
+/// Get the initial and ending values for `arcnum` to scan neighbors of a node.
+///
+/// This is the idiomatic Rust equivalent of the C `GetArcNumLims()` function.
+/// Values are preserved exactly:
+/// - grid nodes (`from_row >= 0`): `arcnum_start = -5`, `upper_arcnum = -1`
+/// - ground node (`from_row == GROUNDROW`): `arcnum_start = -1`,
+///   `upper_arcnum = nground_arcs - 1`
+/// - boundary nodes (other negative rows): `arcnum_start = -1`,
+///   `upper_arcnum = boundary_neighbor_count - 1`
+pub fn get_arc_num_lims(
+    from_row: i64,
+    nground_arcs: i64,
+    boundary_neighbor_count: Option<i64>,
+) -> Result<ArcNumLimits, NetworkError> {
+    if from_row < 0 {
+        if from_row == GROUNDROW {
+            return Ok(ArcNumLimits {
+                arcnum_start: -1,
+                upper_arcnum: nground_arcs - 1,
+            });
+        }
+
+        let boundary_neighbor_count =
+            boundary_neighbor_count.ok_or(NetworkError::MissingBoundaryNeighborCount)?;
+        return Ok(ArcNumLimits {
+            arcnum_start: -1,
+            upper_arcnum: boundary_neighbor_count - 1,
+        });
+    }
+
+    Ok(ArcNumLimits {
+        arcnum_start: -5,
+        upper_arcnum: -1,
+    })
+}
+
 /// Supplementary per-node metadata for secondary (tile-overlap) networks.
 ///
 /// Mirrors the `row` and `col` fields of the C `nodesuppT` struct, which
@@ -220,6 +274,75 @@ pub fn is_region_edge_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- GetArcNumLims ---
+
+    #[test]
+    fn get_arc_num_lims_grid_node() {
+        let limits = get_arc_num_lims(3, 4, None).unwrap();
+        assert_eq!(
+            limits,
+            ArcNumLimits {
+                arcnum_start: -5,
+                upper_arcnum: -1
+            }
+        );
+    }
+
+    #[test]
+    fn get_arc_num_lims_ground_node() {
+        let limits = get_arc_num_lims(GROUNDROW, 6, None).unwrap();
+        assert_eq!(
+            limits,
+            ArcNumLimits {
+                arcnum_start: -1,
+                upper_arcnum: 5
+            }
+        );
+    }
+
+    #[test]
+    fn get_arc_num_lims_ground_node_with_zero_ground_arcs() {
+        let limits = get_arc_num_lims(GROUNDROW, 0, None).unwrap();
+        assert_eq!(
+            limits,
+            ArcNumLimits {
+                arcnum_start: -1,
+                upper_arcnum: -1
+            }
+        );
+    }
+
+    #[test]
+    fn get_arc_num_lims_boundary_node() {
+        // Any negative row that is not GROUNDROW is treated as boundary.
+        let limits = get_arc_num_lims(-4, 99, Some(8)).unwrap();
+        assert_eq!(
+            limits,
+            ArcNumLimits {
+                arcnum_start: -1,
+                upper_arcnum: 7
+            }
+        );
+    }
+
+    #[test]
+    fn get_arc_num_lims_boundary_node_missing_count_errors() {
+        let err = get_arc_num_lims(-4, 5, None).unwrap_err();
+        assert_eq!(err, NetworkError::MissingBoundaryNeighborCount);
+    }
+
+    #[test]
+    fn get_arc_num_lims_boundary_node_with_zero_neighbors() {
+        let limits = get_arc_num_lims(-4, 12, Some(0)).unwrap();
+        assert_eq!(
+            limits,
+            ArcNumLimits {
+                arcnum_start: -1,
+                upper_arcnum: -1
+            }
+        );
+    }
 
     #[test]
     fn grid_node_all_zero_returns_masked() {
