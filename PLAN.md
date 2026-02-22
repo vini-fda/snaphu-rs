@@ -67,7 +67,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
 1. **Project scaffolding** *(DONE)*
    - The c2rust translation now sits behind the `legacy-cli` feature gate and the crate compiles quickly with `--no-default-features`, giving us a clean slate for the idiomatic rewrite.
    - Placeholder modules (`cli`, `config`, `context`, `data`, `costs`, `network`, `unwrapping`, `io`) exist with minimal structs so the new architecture can be filled in incrementally.
-2. **Leaf utilities (Priority ≥5)** *(IN PROGRESS)*
+2. **Leaf utilities (Priority ≥5)** *(DONE for translatable entries)*
    - ✅ Arithmetic kernels now live under `data::ops` with unit coverage for `Add2DFloatArrays`, `BoxCarAvg`, `AvgSigSq`, and `LClip`.
    - ✅ Lookup-table builders `BuildDZRCritLookupTable` and `BuildDZRhoMaxLookupTable` are implemented in `costs::lookup` with typed parameter structs and smoke tests.
    - ✅ Bucket helpers mirroring `BucketInsert/Remove` exist in `network::bucket` with invariants enforced by Rust errors/tests.
@@ -104,26 +104,19 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Tile-region tracing and seam-integration helpers (`ReadNextRegion`, `ReadEdgesAboveAndBelow`, `TraceRegions`, `RegionTraceCheckNeighbors`, `SetUpperEdge`, `SetLowerEdge`, `SetLeftEdge`, `SetRightEdge`, `IntegrateSecondaryFlows`, `ParseSecondaryFlows`) are now translated in `unwrapping::tiles` as safe typed workflows over explicit tile snapshots, edge-flow builders, region traversal state, and secondary-flow parsing/integration APIs.
    - ✅ Priority-0/1 orchestration and Lp/non-grid cost primitives (`CalcCostLP`, `CalcCostLPBiDir`, `CalcCostNonGrid`, `EvalCostLP`, `EvalCostLPBiDir`, `EvalCostNonGrid`, `SetDefaults`, `ProcessArgs`, `CheckParams`, `Unwrap`) are now translated across `unwrapping::{lpn,flow}`, `cli`, and `config` with typed defaults/argument validation and plan-level unwrap scheduling.
    - ✅ Remaining tile/cost/network orchestration entries (`AssembleTiles`, `AssembleTileConnComps`, `BuildCostArrays`, `BuildStatCostsTopo`, `BuildStatCostsDefo`, `BuildStatCostsSmooth`, `GetIntensityAndCorrelation`, `GrowRegions`, `GrowConnCompsMask`, `UnwrapTile`, `SolveCS2`, `SolveMST`, `DischargeTree`, `InitBoundary`, `NonDegenUpdateChildren`, `TreeSolve`) are now translated with safe typed APIs across `unwrapping::{tiles,flow}`, `costs`, and `network`.
-   - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
-    - Group remaining Priority ≥5 helpers into clearer buckets so they can be tackled incrementally:
-      * Memory allocators / deallocators (Get2DMem, Free2DArray, Read/Write2D) – replace with Vec-backed helpers or document why to skip)
-      * IO wrappers and alternate-file readers/writers (ReadIntensity, ReadAlt*).
-      * Cost math primitives (CalcDZRhoMax, SolveDZRCrit, EIofDZR).
-      * CS2/network-flow glue (cs2*, price_*, refine/update_epsilon, discharge).
-      * Graph/topology helpers (Grid/Ground masks).
-      * Boolean/math utilities (IsTrue/IsFalse/IsFinite, Set2DShortArray, Short2DRowColAbsMax, etc.).
-3. **Cost builders (Priority 4)**
-   - Implement `BuildStatCosts*` in `costs` module, ensuring they only depend on previously translated helpers and `RuntimeState` slices.
-   - Provide `CostField` structs to hold per-pixel arrays. Tests should read fixture rasters and verify deterministic bytes vs C output (use small 5×5 samples captured from the original binary).
-4. **Tile assembly & graph prep (Priority 3)**
-   - Translate `AssembleTiles`, `AssembleTileConnComps`, `BuildCostArrays`, `BuildCostArraysNonGrid`. These functions orchestrate multiple helpers, so confirm APIs for rasters/tiles are stable before moving on.
-   - Introduce `TileGraph` struct encapsulating adjacency + tile metadata; expose conversions to `cost_scaling_rs` edges.
-5. **Network + flow (Priority 2)**
-   - Implement wrappers around `cost_scaling_rs` that build the full problem from `TileGraph` and the cost arrays.
-   - Port `CalcFlow` and related functions, ensuring error handling maps into Rust `Result` types.
-6. **Entry points (Priority 0–1)**
-   - Translate `CalcCostLP*`, `CalcCostNonGrid`, CLI parsing, IO, and the high-level `main` pipeline.
-   - Replace the call to `snaphu_sys::run_main` in `lib.rs` with the new `Snaphu::run()` once the rest compiles.
+   - All CSV entries are now either `DONE` or explicitly `NOT_PLANNED` (17 low-level allocator/CS2 internals intentionally deferred).
+3. **Cost builders (Priority 4)** *(DONE for current translation scope)*
+   - ✅ `BuildStatCostsTopo`, `BuildStatCostsDefo`, `BuildStatCostsSmooth`, `GetIntensityAndCorrelation`, and `BuildCostArrays` are translated in `costs`.
+   - ⏳ Fixture-level numeric parity calibration against the C binary is still pending.
+4. **Tile assembly & graph prep (Priority 3)** *(PARTIALLY DONE)*
+   - ✅ `AssembleTiles`, `AssembleTileConnComps`, `BuildCostArrays`, `GrowRegions`, and `GrowConnCompsMask` are translated with typed APIs.
+   - ⏳ `BuildCostArraysNonGrid` and a fuller `TileGraph` conversion surface for solver backends are still pending.
+5. **Network + flow (Priority 2)** *(IN PROGRESS)*
+   - ✅ Typed wrappers/orchestration for `SolveCS2`, `SolveMST`, `DischargeTree`, `InitBoundary`, `NonDegenUpdateChildren`, and `TreeSolve` are present.
+   - ⏳ The `cost_scaling_rs` backend integration is still pending (dependency/adaptor wiring not finished).
+6. **Entry points (Priority 0–1)** *(IN PROGRESS)*
+   - ✅ High-level translated orchestration exists (`CalcCostLP*`, `CalcCostNonGrid`, CLI/config parsing, `Unwrap`, `UnwrapTile`).
+   - ⏳ `lib.rs` still defaults to `legacy-cli` and still calls `snaphu_sys::run_main`; native `Snaphu::run()` replacement is pending.
 
 While translating each CSV-priority batch, update the spreadsheet (or a markdown checklist) with statuses so we know which functions remain.
 
@@ -143,7 +136,14 @@ While translating each CSV-priority batch, update the spreadsheet (or a markdown
 - **Floating-point drift**: Document acceptable tolerances per module; prefer `f64` for accumulators even if C used double.
 - **CS2 parity**: `cost_scaling_rs` may expose different tuning knobs; add adapter layer to emulate SNAPHU defaults and keep integration tests focused on network outputs instead of internal solver steps.
 
+## Verification Snapshot (2026-02-22)
+- `just translation_plan --status EMPTY` => no rows.
+- `just translation_plan --status DONE` => 173 rows.
+- `just translation_plan --status NOT_PLANNED` => 17 rows (deferred low-level allocator/CS2 internals).
+- `cargo test --no-default-features` currently fails due `src/lib.rs` test assertion requiring `legacy-cli`.
+- `Cargo.toml` currently has no `cost_scaling_rs` dependency; backend integration remains pending.
+
 ## Definition of Done
-1. `cargo test` passes with only the idiomatic Rust implementation (no legacy feature flag required).
+1. `cargo test --no-default-features` passes with only the idiomatic Rust implementation (no legacy feature flag required).
 2. CLI arguments, config file semantics, and output formats match the original binary (validated via regression suite).
-3. All functions listed in `snaphu_translation_order.csv` marked `Status=done` with references to their Rust counterparts.
+3. All functions listed in `snaphu_translation_order.csv` are marked `DONE` or `NOT_PLANNED` with explicit rationale.
