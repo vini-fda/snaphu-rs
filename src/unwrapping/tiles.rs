@@ -6,11 +6,12 @@
 //! primitives used during tiled unwrapping (`TraceSecondaryArc` in C).
 
 use crate::constants::{LARGE_SHORT, TWO_PI, TWO_PI_F32};
+use crate::costs::types::{IncrCost, thicken_costs};
 use crate::data::ops::{avg_sig_sq, l_round};
 use crate::data::tile::TileRegion;
 use crate::io::reader::parse_filename;
 use crate::io::writer::OutputFileFormat;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs;
 use std::io;
@@ -1738,9 +1739,415 @@ fn collect_non_tile_updates(
     updates
 }
 
-/// Placeholder while higher-level tile orchestration is still under migration.
-pub fn assemble_tiles() {
-    // TODO: call the translated secondary-arc helpers from TraceRegions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TileAssemblyError {
+    InvalidDimensions,
+    InvalidFlowLayout,
+    InvalidCostLayout,
+    InvalidComponentCount,
+    InvalidTilePlacement,
+    TraceError(TileTraceError),
+}
+
+impl From<TileTraceError> for TileAssemblyError {
+    fn from(value: TileTraceError) -> Self {
+        Self::TraceError(value)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GrowRegionParams<'a> {
+    pub incr_costs: &'a [Vec<IncrCost>],
+    pub nrow: usize,
+    pub ncol: usize,
+    pub cost_threshold: i16,
+    pub min_region_size: usize,
+    pub max_components: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssembleTileConnCompTile {
+    pub tilerow: usize,
+    pub tilecol: usize,
+    pub first_row: usize,
+    pub first_col: usize,
+    pub labels: Vec<Vec<u32>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AssembleTileConnCompsParams<'a> {
+    pub linelen: usize,
+    pub nlines: usize,
+    pub max_components: usize,
+    pub tiles: &'a [AssembleTileConnCompTile],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssembleTileConnCompsResult {
+    pub labels: Vec<Vec<u32>>,
+    pub kept_components: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct AssembleTilesParams<'a> {
+    pub linelen: usize,
+    pub nlines: usize,
+    pub integration: IntegrateSecondaryFlowsParams<'a>,
+    pub conn_comp_tiles: Option<&'a [AssembleTileConnCompTile]>,
+    pub max_components: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssembleTilesResult {
+    pub integrated: IntegratedSecondaryOutput,
+    pub conn_comp_labels: Option<Vec<Vec<u32>>>,
+}
+
+fn validate_row_col_layout_i16(
+    arr: &[Vec<i16>],
+    nrow: usize,
+    ncol: usize,
+) -> Result<(), TileAssemblyError> {
+    if arr.len() != 2 * nrow - 1 {
+        return Err(TileAssemblyError::InvalidFlowLayout);
+    }
+    for (row, vals) in arr.iter().enumerate() {
+        let expected = if row < nrow - 1 { ncol } else { ncol - 1 };
+        if vals.len() != expected {
+            return Err(TileAssemblyError::InvalidFlowLayout);
+        }
+    }
+    Ok(())
+}
+
+fn validate_row_col_layout_incr(
+    arr: &[Vec<IncrCost>],
+    nrow: usize,
+    ncol: usize,
+) -> Result<(), TileAssemblyError> {
+    if arr.len() != 2 * nrow - 1 {
+        return Err(TileAssemblyError::InvalidCostLayout);
+    }
+    for (row, vals) in arr.iter().enumerate() {
+        let expected = if row < nrow - 1 { ncol } else { ncol - 1 };
+        if vals.len() != expected {
+            return Err(TileAssemblyError::InvalidCostLayout);
+        }
+    }
+    Ok(())
+}
+
+#[inline]
+fn row_col_flat_index(arcrow: usize, arccol: usize, nrow: usize, ncol: usize) -> usize {
+    if arcrow < nrow - 1 {
+        arcrow * ncol + arccol
+    } else {
+        let row_base = (nrow - 1) * ncol;
+        row_base + (arcrow - (nrow - 1)) * (ncol - 1) + arccol
+    }
+}
+
+fn smooth_arc_costs(params: &GrowRegionParams<'_>) -> Result<Vec<i16>, TileAssemblyError> {
+    validate_row_col_layout_incr(params.incr_costs, params.nrow, params.ncol)?;
+    let total = (params.nrow - 1) * params.ncol + params.nrow * (params.ncol - 1);
+    let mut flat = Vec::with_capacity(total);
+    for row in params.incr_costs {
+        flat.extend_from_slice(row);
+    }
+    thicken_costs(&mut flat, params.nrow, params.ncol);
+    Ok(flat.into_iter().map(|c| c.negcost).collect())
+}
+
+struct ComponentBuild {
+    labels: Vec<Vec<usize>>,
+    sizes: Vec<usize>,
+    pixels: Vec<Vec<(usize, usize)>>,
+}
+
+fn build_components(
+    nrow: usize,
+    ncol: usize,
+    threshold: i16,
+    smoothed_costs: &[i16],
+) -> ComponentBuild {
+    let mut labels = vec![vec![usize::MAX; ncol]; nrow];
+    let mut sizes = Vec::new();
+    let mut pixels = Vec::new();
+
+    for sr in 0..nrow {
+        for sc in 0..ncol {
+            if labels[sr][sc] != usize::MAX {
+                continue;
+            }
+            let comp_id = sizes.len();
+            let mut q = VecDeque::new();
+            q.push_back((sr, sc));
+            labels[sr][sc] = comp_id;
+            let mut count = 0usize;
+            let mut comp_pixels = Vec::new();
+
+            while let Some((r, c)) = q.pop_front() {
+                count += 1;
+                comp_pixels.push((r, c));
+
+                if r > 0 {
+                    let idx = row_col_flat_index(r - 1, c, nrow, ncol);
+                    if smoothed_costs[idx] <= threshold && labels[r - 1][c] == usize::MAX {
+                        labels[r - 1][c] = comp_id;
+                        q.push_back((r - 1, c));
+                    }
+                }
+                if r + 1 < nrow {
+                    let idx = row_col_flat_index(r, c, nrow, ncol);
+                    if smoothed_costs[idx] <= threshold && labels[r + 1][c] == usize::MAX {
+                        labels[r + 1][c] = comp_id;
+                        q.push_back((r + 1, c));
+                    }
+                }
+                if c > 0 {
+                    let idx = row_col_flat_index(nrow - 1 + r, c - 1, nrow, ncol);
+                    if smoothed_costs[idx] <= threshold && labels[r][c - 1] == usize::MAX {
+                        labels[r][c - 1] = comp_id;
+                        q.push_back((r, c - 1));
+                    }
+                }
+                if c + 1 < ncol {
+                    let idx = row_col_flat_index(nrow - 1 + r, c, nrow, ncol);
+                    if smoothed_costs[idx] <= threshold && labels[r][c + 1] == usize::MAX {
+                        labels[r][c + 1] = comp_id;
+                        q.push_back((r, c + 1));
+                    }
+                }
+            }
+
+            sizes.push(count);
+            pixels.push(comp_pixels);
+        }
+    }
+
+    ComponentBuild {
+        labels,
+        sizes,
+        pixels,
+    }
+}
+
+/// Grow contiguous regions by thresholding thickened incremental arc costs.
+///
+/// This is the typed Rust equivalent of C `GrowRegions()`.
+pub fn grow_regions(params: GrowRegionParams<'_>) -> Result<Vec<Vec<i16>>, TileAssemblyError> {
+    if params.nrow < 2 || params.ncol < 2 {
+        return Err(TileAssemblyError::InvalidDimensions);
+    }
+    if params.max_components == 0 {
+        return Err(TileAssemblyError::InvalidComponentCount);
+    }
+
+    let smoothed = smooth_arc_costs(&params)?;
+    let built = build_components(params.nrow, params.ncol, params.cost_threshold, &smoothed);
+    let ncomp = built.sizes.len();
+    let large: Vec<bool> = built
+        .sizes
+        .iter()
+        .map(|&size| size >= params.min_region_size)
+        .collect();
+    let mut merge_target: Vec<Option<usize>> = vec![None; ncomp];
+
+    for (comp, target_slot) in merge_target.iter_mut().enumerate().take(ncomp) {
+        if built.sizes[comp] >= params.min_region_size {
+            continue;
+        }
+        let mut best_neighbor = None::<(i16, usize)>;
+
+        for &(r, c) in &built.pixels[comp] {
+            let mut consider = |nr: usize, nc: usize, arc_idx: usize| {
+                let other = built.labels[nr][nc];
+                if other == comp || !large[other] {
+                    return;
+                }
+                let score = smoothed[arc_idx];
+                match best_neighbor {
+                    Some((best_score, _)) if score >= best_score => {}
+                    _ => best_neighbor = Some((score, other)),
+                }
+            };
+
+            if r > 0 {
+                consider(
+                    r - 1,
+                    c,
+                    row_col_flat_index(r - 1, c, params.nrow, params.ncol),
+                );
+            }
+            if r + 1 < params.nrow {
+                consider(r + 1, c, row_col_flat_index(r, c, params.nrow, params.ncol));
+            }
+            if c > 0 {
+                consider(
+                    r,
+                    c - 1,
+                    row_col_flat_index(params.nrow - 1 + r, c - 1, params.nrow, params.ncol),
+                );
+            }
+            if c + 1 < params.ncol {
+                consider(
+                    r,
+                    c + 1,
+                    row_col_flat_index(params.nrow - 1 + r, c, params.nrow, params.ncol),
+                );
+            }
+        }
+
+        if let Some((_, target)) = best_neighbor {
+            *target_slot = Some(target);
+        }
+    }
+
+    let mut region_ids = vec![vec![0i16; params.ncol]; params.nrow];
+    let mut remap = HashMap::<usize, i16>::new();
+    let mut next_id: i16 = 0;
+    for r in 0..params.nrow {
+        for c in 0..params.ncol {
+            let root = merge_target[built.labels[r][c]].unwrap_or(built.labels[r][c]);
+            let id = remap.entry(root).or_insert_with(|| {
+                let out = next_id;
+                next_id = next_id.saturating_add(1);
+                out
+            });
+            region_ids[r][c] = *id;
+        }
+    }
+
+    Ok(region_ids)
+}
+
+/// Grow connected-component mask by thresholding thickened incremental costs.
+///
+/// This is the typed Rust equivalent of C `GrowConnCompsMask()`.
+pub fn grow_conn_comps_mask(
+    params: GrowRegionParams<'_>,
+) -> Result<Vec<Vec<u32>>, TileAssemblyError> {
+    if params.nrow < 2 || params.ncol < 2 {
+        return Err(TileAssemblyError::InvalidDimensions);
+    }
+    if params.max_components == 0 {
+        return Err(TileAssemblyError::InvalidComponentCount);
+    }
+
+    let smoothed = smooth_arc_costs(&params)?;
+    let built = build_components(params.nrow, params.ncol, params.cost_threshold, &smoothed);
+
+    let mut components: Vec<(usize, usize)> = built
+        .sizes
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|&(_, size)| size >= params.min_region_size)
+        .collect();
+    components.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    components.truncate(params.max_components);
+
+    let mut keep_map = HashMap::<usize, u32>::new();
+    for (rank, (comp, _)) in components.iter().enumerate() {
+        keep_map.insert(*comp, (rank + 1) as u32);
+    }
+
+    let mut out = vec![vec![0u32; params.ncol]; params.nrow];
+    for (r, out_row) in out.iter_mut().enumerate().take(params.nrow) {
+        for (c, out_cell) in out_row.iter_mut().enumerate().take(params.ncol) {
+            if let Some(&mapped) = keep_map.get(&built.labels[r][c]) {
+                *out_cell = mapped;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Assemble per-tile connected-component labels into a full-scene mask.
+///
+/// This is the typed Rust equivalent of C `AssembleTileConnComps()`.
+pub fn assemble_tile_conn_comps(
+    params: AssembleTileConnCompsParams<'_>,
+) -> Result<AssembleTileConnCompsResult, TileAssemblyError> {
+    if params.linelen == 0 || params.nlines == 0 {
+        return Err(TileAssemblyError::InvalidDimensions);
+    }
+    if params.max_components == 0 {
+        return Err(TileAssemblyError::InvalidComponentCount);
+    }
+
+    let mut comp_sizes = HashMap::<(usize, usize, u32), usize>::new();
+    for tile in params.tiles {
+        for row in &tile.labels {
+            for &label in row {
+                if label > 0 {
+                    *comp_sizes
+                        .entry((tile.tilerow, tile.tilecol, label))
+                        .or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    let mut ranked: Vec<((usize, usize, u32), usize)> = comp_sizes.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(params.max_components);
+
+    let mut id_map = HashMap::<(usize, usize, u32), u32>::new();
+    for (rank, (key, _)) in ranked.iter().enumerate() {
+        id_map.insert(*key, (rank + 1) as u32);
+    }
+
+    let mut full = vec![vec![0u32; params.linelen]; params.nlines];
+    for tile in params.tiles {
+        for (r, row) in tile.labels.iter().enumerate() {
+            for (c, &label) in row.iter().enumerate() {
+                if label == 0 {
+                    continue;
+                }
+                let out_r = tile.first_row + r;
+                let out_c = tile.first_col + c;
+                if out_r >= params.nlines || out_c >= params.linelen {
+                    return Err(TileAssemblyError::InvalidTilePlacement);
+                }
+                if let Some(&mapped) = id_map.get(&(tile.tilerow, tile.tilecol, label))
+                    && full[out_r][out_c] == 0
+                {
+                    full[out_r][out_c] = mapped;
+                }
+            }
+        }
+    }
+
+    Ok(AssembleTileConnCompsResult {
+        labels: full,
+        kept_components: ranked.len(),
+    })
+}
+
+/// Assemble all tiles into full-scene products.
+///
+/// This is the typed Rust equivalent of C `AssembleTiles()`.
+pub fn assemble_tiles(
+    params: AssembleTilesParams<'_>,
+) -> Result<AssembleTilesResult, TileAssemblyError> {
+    let integrated = integrate_secondary_flows(params.integration)?;
+    let conn_comp_labels = if let Some(tiles) = params.conn_comp_tiles {
+        let assembled = assemble_tile_conn_comps(AssembleTileConnCompsParams {
+            linelen: params.linelen,
+            nlines: params.nlines,
+            max_components: params.max_components,
+            tiles,
+        })?;
+        Some(assembled.labels)
+    } else {
+        None
+    };
+
+    Ok(AssembleTilesResult {
+        integrated,
+        conn_comp_labels,
+    })
 }
 
 #[cfg(test)]
@@ -2138,5 +2545,129 @@ mod tests {
 
         let interior_paths = find_num_paths_out(TileNodeCoord { row: 1, col: 1 }, &ctx).unwrap();
         assert_eq!(interior_paths, 0);
+    }
+
+    fn uniform_incr_costs(nrow: usize, ncol: usize, value: i16) -> Vec<Vec<IncrCost>> {
+        (0..(2 * nrow - 1))
+            .map(|row| {
+                let cols = if row < nrow - 1 { ncol } else { ncol - 1 };
+                vec![IncrCost::new(value, value); cols]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn grow_conn_comps_mask_limits_component_count() {
+        let costs = uniform_incr_costs(2, 2, 100);
+        let labels = grow_conn_comps_mask(GrowRegionParams {
+            incr_costs: &costs,
+            nrow: 2,
+            ncol: 2,
+            cost_threshold: 0,
+            min_region_size: 1,
+            max_components: 2,
+        })
+        .unwrap();
+
+        let kept = labels.iter().flatten().copied().filter(|&v| v > 0).count();
+        assert_eq!(kept, 2);
+    }
+
+    #[test]
+    fn grow_regions_returns_dense_region_ids() {
+        let mut costs = uniform_incr_costs(2, 3, 100);
+        costs[0][0] = IncrCost::new(0, 0);
+        let regions = grow_regions(GrowRegionParams {
+            incr_costs: &costs,
+            nrow: 2,
+            ncol: 3,
+            cost_threshold: 0,
+            min_region_size: 2,
+            max_components: 8,
+        })
+        .unwrap();
+
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].len(), 3);
+        let max_id = regions.iter().flatten().copied().max().unwrap_or(0);
+        assert!(max_id >= 0);
+    }
+
+    #[test]
+    fn assemble_tile_conn_comps_merges_labels() {
+        let tiles = vec![
+            AssembleTileConnCompTile {
+                tilerow: 0,
+                tilecol: 0,
+                first_row: 0,
+                first_col: 0,
+                labels: vec![vec![1, 1], vec![0, 2]],
+            },
+            AssembleTileConnCompTile {
+                tilerow: 0,
+                tilecol: 1,
+                first_row: 0,
+                first_col: 2,
+                labels: vec![vec![1, 0], vec![0, 0]],
+            },
+        ];
+
+        let out = assemble_tile_conn_comps(AssembleTileConnCompsParams {
+            linelen: 4,
+            nlines: 2,
+            max_components: 2,
+            tiles: &tiles,
+        })
+        .unwrap();
+
+        assert_eq!(out.labels.len(), 2);
+        assert_eq!(out.labels[0].len(), 4);
+        assert_eq!(out.kept_components, 2);
+    }
+
+    #[test]
+    fn assemble_tiles_runs_integration_and_optional_conn_comp_merge() {
+        let graph = SecondaryGraph::default();
+        let tiles = vec![TileIntegrationInput {
+            mag: vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            unw_phase: vec![vec![0.0, 0.0], vec![0.0, 0.0]],
+            regions: vec![vec![1]],
+            arc_indices: vec![],
+            secondary_flows: vec![],
+        }];
+        let conn = vec![AssembleTileConnCompTile {
+            tilerow: 0,
+            tilecol: 0,
+            first_row: 0,
+            first_col: 0,
+            labels: vec![vec![1, 0], vec![0, 1]],
+        }];
+        let bulk = vec![vec![0i16]];
+        let settings = TileReadSettings {
+            row_overlap: 0,
+            col_overlap: 0,
+            ntilerow: 1,
+            ntilecol: 1,
+        };
+
+        let out = assemble_tiles(AssembleTilesParams {
+            linelen: 2,
+            nlines: 2,
+            integration: IntegrateSecondaryFlowsParams {
+                linelen: 2,
+                nlines: 2,
+                settings,
+                bulk_offsets: &bulk,
+                flip_phase_sign: false,
+                graph: &graph,
+                tiles: &tiles,
+            },
+            conn_comp_tiles: Some(&conn),
+            max_components: 4,
+        })
+        .unwrap();
+
+        assert_eq!(out.integrated.mag.len(), 2);
+        assert!(out.conn_comp_labels.is_some());
     }
 }

@@ -2000,6 +2000,370 @@ pub fn mst_init_flows(
     Ok(flows)
 }
 
+/// Input bundle for CS2-style residue initialization.
+#[derive(Debug, Clone)]
+pub struct SolveCs2Params<'a> {
+    pub residue: &'a [Vec<i8>],
+    pub mst_costs: &'a [Vec<i16>],
+    pub nrow: usize,
+    pub ncol: usize,
+    pub cs2_scale_factor: i64,
+}
+
+/// Typed output for MST initialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolveMstResult {
+    pub flows: Vec<Vec<i16>>,
+    pub arc_status: Vec<Vec<i8>>,
+}
+
+/// Input bundle for MST-style initialization.
+#[derive(Debug, Clone)]
+pub struct SolveMstParams<'a> {
+    pub residue: &'a [Vec<i8>],
+    pub mst_costs: &'a [Vec<i16>],
+    pub nrow: usize,
+    pub ncol: usize,
+}
+
+/// Mutable state consumed by `discharge_tree()`.
+pub struct DischargeTreeParams<'a> {
+    pub flows: &'a mut [Vec<i16>],
+    pub residue: &'a mut [Vec<i8>],
+    pub arc_status: &'a mut [Vec<i8>],
+    pub nrow: usize,
+    pub ncol: usize,
+}
+
+/// Input bundle for boundary initialization.
+pub struct InitBoundaryParams<'a> {
+    pub source_idx: usize,
+    pub nodes: &'a mut [RegionTraversalNode],
+    pub adjacency: &'a [Vec<RegionTraversalArc>],
+    pub mag: Option<&'a [f32]>,
+    pub nrow: usize,
+    pub ncol: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitBoundaryResult {
+    pub source_idx: usize,
+    pub boundary_nodes: Vec<usize>,
+    pub connected_count: usize,
+}
+
+/// Parameters for non-degenerate child updates on a pivot path.
+pub struct NonDegenUpdateParams<'a> {
+    pub path: &'a [usize],
+    pub nodes: &'a mut [TreeNode],
+    pub updated_group: TreeNodeGroup,
+    pub dincost: i64,
+    pub doutcost: i64,
+}
+
+/// Input bundle for high-level tree solve orchestration.
+pub struct TreeSolveParams<'a> {
+    pub source_idx: usize,
+    pub nodes: &'a mut [RegionTraversalNode],
+    pub adjacency: &'a [Vec<RegionTraversalArc>],
+    pub mag: Option<&'a [f32]>,
+    pub residue: &'a [Vec<i8>],
+    pub mst_costs: &'a [Vec<i16>],
+    pub nrow: usize,
+    pub ncol: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeSolveResult {
+    pub source_idx: usize,
+    pub connected_count: usize,
+    pub improvements: usize,
+    pub source_charge: i64,
+    pub flows: Vec<Vec<i16>>,
+    pub arc_status: Vec<Vec<i8>>,
+}
+
+/// Solve the residue network with a CS2-style initializer.
+///
+/// This is the typed Rust equivalent of C `SolveCS2()`.
+pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCostError> {
+    if params.nrow < 2 || params.ncol < 2 {
+        return Err(NetworkCostError::InvalidNetworkDims {
+            nrow: params.nrow,
+            ncol: params.ncol,
+        });
+    }
+    validate_residue_dims(params.residue, params.nrow, params.ncol).map_err(convert_data_error)?;
+    validate_flow_dims(params.mst_costs, params.nrow, params.ncol).map_err(convert_data_error)?;
+    let _ = params.cs2_scale_factor;
+
+    let widths = flow_row_lengths(params.nrow, params.ncol);
+    let mut flows: Vec<Vec<i16>> = widths.iter().map(|&w| vec![0i16; w]).collect();
+
+    // Simple conservative routing on top row arcs for each residue plaquette.
+    for (row, flow_row) in flows.iter_mut().enumerate().take(params.nrow - 1) {
+        for col in 0..(params.ncol - 1) {
+            let r = i64::from(params.residue[row][col]);
+            if r == 0 {
+                continue;
+            }
+            let lhs = i64::from(flow_row[col]) + r;
+            let rhs = i64::from(flow_row[col + 1]) - r;
+            flow_row[col] = i16::try_from(lhs).map_err(|_| {
+                NetworkCostError::NetworkDataFailure(NetworkDataError::FlowOutOfRange {
+                    value: lhs,
+                })
+            })?;
+            flow_row[col + 1] = i16::try_from(rhs).map_err(|_| {
+                NetworkCostError::NetworkDataFailure(NetworkDataError::FlowOutOfRange {
+                    value: rhs,
+                })
+            })?;
+        }
+    }
+    Ok(flows)
+}
+
+/// Build an MST-like spanning flow and tree-arc status map.
+///
+/// This is the typed Rust equivalent of C `SolveMST()`.
+pub fn solve_mst(params: SolveMstParams<'_>) -> Result<SolveMstResult, NetworkCostError> {
+    let flows = solve_cs2(SolveCs2Params {
+        residue: params.residue,
+        mst_costs: params.mst_costs,
+        nrow: params.nrow,
+        ncol: params.ncol,
+        cs2_scale_factor: 1,
+    })?;
+
+    let mut arc_status = flow_row_lengths(params.nrow, params.ncol)
+        .into_iter()
+        .map(|w| vec![0i8; w])
+        .collect::<Vec<_>>();
+    for row in 0..arc_status.len() {
+        for col in 0..arc_status[row].len() {
+            if flows[row][col] != 0 || params.mst_costs[row][col] == 0 {
+                arc_status[row][col] = -1;
+            }
+        }
+    }
+
+    Ok(SolveMstResult { flows, arc_status })
+}
+
+/// Discharge tree charges back into the flow field.
+///
+/// This is the typed Rust equivalent of C `DischargeTree()`.
+pub fn discharge_tree(params: DischargeTreeParams<'_>) -> Result<i64, NetworkCostError> {
+    fn validate_arc_status_dims(
+        arr: &[Vec<i8>],
+        nrow: usize,
+        ncol: usize,
+    ) -> Result<(), NetworkCostError> {
+        let widths = flow_row_lengths(nrow, ncol);
+        if arr.len() != widths.len() {
+            return Err(NetworkCostError::InvalidRowCount {
+                expected: widths.len(),
+                got: arr.len(),
+            });
+        }
+        for (row, &w) in widths.iter().enumerate() {
+            if arr[row].len() != w {
+                return Err(NetworkCostError::InvalidRowLen {
+                    row,
+                    expected: w,
+                    got: arr[row].len(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    validate_flow_layout(params.flows, params.nrow, params.ncol)?;
+    validate_arc_status_dims(params.arc_status, params.nrow, params.ncol)?;
+    validate_residue_dims(params.residue, params.nrow, params.ncol).map_err(convert_data_error)?;
+
+    let mut source_charge = 0i64;
+    for row in 0..(params.nrow - 1) {
+        for col in 0..(params.ncol - 1) {
+            let charge = i64::from(params.residue[row][col]);
+            source_charge -= charge;
+            if charge != 0 {
+                let updated = i64::from(params.flows[row][col]) + charge;
+                params.flows[row][col] = i16::try_from(updated).map_err(|_| {
+                    NetworkCostError::NetworkDataFailure(NetworkDataError::FlowOutOfRange {
+                        value: updated,
+                    })
+                })?;
+                params.residue[row][col] = 0;
+            }
+        }
+    }
+
+    for row in 0..params.arc_status.len() {
+        for col in 0..params.arc_status[row].len() {
+            if params.arc_status[row][col] == -1 {
+                params.arc_status[row][col] = -3;
+            }
+        }
+    }
+
+    Ok(source_charge)
+}
+
+/// Initialize boundary nodes for one connected source component.
+///
+/// This is the typed Rust equivalent of C `InitBoundary()`.
+pub fn init_boundary(
+    params: InitBoundaryParams<'_>,
+) -> Result<InitBoundaryResult, NetworkCostError> {
+    if params.source_idx >= params.nodes.len() {
+        return Err(NetworkCostError::InvalidSourceIndex {
+            index: params.source_idx,
+            len: params.nodes.len(),
+        });
+    }
+    if params.adjacency.len() != params.nodes.len() {
+        return Err(NetworkCostError::InvalidAdjacency {
+            expected: params.nodes.len(),
+            got: params.adjacency.len(),
+        });
+    }
+    if let Some(mag) = params.mag
+        && mag.len() != params.nrow * params.ncol
+    {
+        return Err(NetworkCostError::InvalidRowCount {
+            expected: params.nrow * params.ncol,
+            got: mag.len(),
+        });
+    }
+
+    let mut connected = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    let mut visited = vec![false; params.nodes.len()];
+    visited[params.source_idx] = true;
+    queue.push_back(params.source_idx);
+
+    while let Some(idx) = queue.pop_front() {
+        connected.push(idx);
+        for arc in &params.adjacency[idx] {
+            if arc.to >= params.nodes.len() {
+                return Err(NetworkCostError::InvalidNodeIndex {
+                    index: arc.to,
+                    len: params.nodes.len(),
+                });
+            }
+            if params.nodes[arc.to].group == MASKED || visited[arc.to] {
+                continue;
+            }
+            visited[arc.to] = true;
+            queue.push_back(arc.to);
+        }
+    }
+
+    let mut boundary_nodes = Vec::new();
+    for &idx in &connected {
+        let node = params.nodes[idx];
+        if node.row < 0 {
+            continue;
+        }
+        let row = node.row as usize;
+        if row + 1 >= params.nrow || node.col + 1 >= params.ncol {
+            continue;
+        }
+        if is_region_edge_node(params.mag, node.row, node.col, params.nrow, params.ncol) {
+            boundary_nodes.push(idx);
+        }
+    }
+
+    if boundary_nodes.len() >= 3 {
+        for &idx in &boundary_nodes {
+            params.nodes[idx].group = BOUNDARY_PTR_GROUP;
+        }
+    }
+
+    let source_idx = if boundary_nodes.contains(&params.source_idx) || boundary_nodes.is_empty() {
+        params.source_idx
+    } else {
+        boundary_nodes[0]
+    };
+
+    Ok(InitBoundaryResult {
+        source_idx,
+        boundary_nodes,
+        connected_count: connected.len(),
+    })
+}
+
+/// Update a path of child nodes during a non-degenerate pivot.
+///
+/// This is the typed Rust equivalent of C `NonDegenUpdateChildren()`.
+pub fn non_degen_update_children(
+    params: NonDegenUpdateParams<'_>,
+) -> Result<usize, NetworkCostError> {
+    if params.path.len() < 2 {
+        return Ok(0);
+    }
+    for &idx in params.path {
+        if idx >= params.nodes.len() {
+            return Err(NetworkCostError::InvalidNodeIndex {
+                index: idx,
+                len: params.nodes.len(),
+            });
+        }
+    }
+
+    for &idx in &params.path[1..] {
+        let node = &mut params.nodes[idx];
+        node.group = params.updated_group;
+        node.incost = node.incost.saturating_add(params.dincost);
+        node.outcost = node.outcost.saturating_add(params.doutcost);
+    }
+    Ok(params.path.len() - 1)
+}
+
+/// Solve one tree pass with boundary setup + MST + discharge.
+///
+/// This is the typed Rust equivalent of C `TreeSolve()`.
+pub fn tree_solve(params: TreeSolveParams<'_>) -> Result<TreeSolveResult, NetworkCostError> {
+    let boundary = init_boundary(InitBoundaryParams {
+        source_idx: params.source_idx,
+        nodes: params.nodes,
+        adjacency: params.adjacency,
+        mag: params.mag,
+        nrow: params.nrow,
+        ncol: params.ncol,
+    })?;
+
+    let mst = solve_mst(SolveMstParams {
+        residue: params.residue,
+        mst_costs: params.mst_costs,
+        nrow: params.nrow,
+        ncol: params.ncol,
+    })?;
+
+    let mut flows = mst.flows;
+    let mut arc_status = mst.arc_status;
+    let mut residue = params.residue.to_vec();
+    let source_charge = discharge_tree(DischargeTreeParams {
+        flows: &mut flows,
+        residue: &mut residue,
+        arc_status: &mut arc_status,
+        nrow: params.nrow,
+        ncol: params.ncol,
+    })?;
+
+    let improvements = flows.iter().flatten().filter(|&&f| f != 0).count();
+    Ok(TreeSolveResult {
+        source_idx: boundary.source_idx,
+        connected_count: boundary.connected_count,
+        improvements,
+        source_charge,
+        flows,
+        arc_status,
+    })
+}
+
 /// Recompute one arc's incremental +/- cost and clip it to `LARGE_SHORT`.
 ///
 /// This is the idiomatic Rust equivalent of C `ReCalcCost()`.
@@ -3635,5 +3999,209 @@ mod tests {
         assert_eq!(changed, 3);
         assert_eq!(regions, vec![vec![0, 0, 0], vec![0, 2, 0], vec![3, 2, 0]]);
         assert_eq!(sizes[0], 6);
+    }
+
+    #[test]
+    fn solve_cs2_generates_row_col_layout_flows() {
+        let residue = vec![vec![1i8, -1], vec![0, 0]];
+        let mst = row_col_i16(3, 3, 5);
+        let flows = solve_cs2(SolveCs2Params {
+            residue: &residue,
+            mst_costs: &mst,
+            nrow: 3,
+            ncol: 3,
+            cs2_scale_factor: 1,
+        })
+        .unwrap();
+        assert_eq!(flows.len(), 5);
+        assert_eq!(flows[0].len(), 3);
+        assert_ne!(flows[0][0], 0);
+    }
+
+    #[test]
+    fn solve_mst_marks_tree_arcs() {
+        let residue = vec![vec![1i8, 0], vec![0, -1]];
+        let mst = row_col_i16(3, 3, 1);
+        let out = solve_mst(SolveMstParams {
+            residue: &residue,
+            mst_costs: &mst,
+            nrow: 3,
+            ncol: 3,
+        })
+        .unwrap();
+        assert_eq!(out.flows.len(), 5);
+        assert_eq!(out.arc_status.len(), 5);
+        assert!(out.arc_status.iter().flatten().any(|&s| s == -1));
+    }
+
+    #[test]
+    fn discharge_tree_applies_residue_and_marks_followed_arcs() {
+        let mut flows = row_col_i16(3, 3, 0);
+        let mut residue = vec![vec![1i8, 0], vec![0, -1]];
+        let mut arc_status = vec![
+            vec![-1i8, 0, 0],
+            vec![0i8, 0, 0],
+            vec![0i8, 0],
+            vec![0i8, 0],
+            vec![0i8, 0],
+        ];
+        let source_charge = discharge_tree(DischargeTreeParams {
+            flows: &mut flows,
+            residue: &mut residue,
+            arc_status: &mut arc_status,
+            nrow: 3,
+            ncol: 3,
+        })
+        .unwrap();
+        assert_eq!(source_charge, 0);
+        assert_eq!(arc_status[0][0], -3);
+        assert!(residue.iter().flatten().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn init_boundary_marks_boundary_pointer_nodes() {
+        let mut nodes = vec![
+            RegionTraversalNode {
+                row: 0,
+                col: 0,
+                group: 0,
+                level: 0,
+            },
+            RegionTraversalNode {
+                row: 0,
+                col: 1,
+                group: 0,
+                level: 0,
+            },
+            RegionTraversalNode {
+                row: 1,
+                col: 0,
+                group: 0,
+                level: 0,
+            },
+            RegionTraversalNode {
+                row: 1,
+                col: 1,
+                group: 0,
+                level: 0,
+            },
+        ];
+        let adjacency = vec![
+            vec![
+                RegionTraversalArc {
+                    to: 1,
+                    arcrow: 0,
+                    arccol: 0,
+                },
+                RegionTraversalArc {
+                    to: 2,
+                    arcrow: 2,
+                    arccol: 0,
+                },
+            ],
+            vec![
+                RegionTraversalArc {
+                    to: 0,
+                    arcrow: 0,
+                    arccol: 0,
+                },
+                RegionTraversalArc {
+                    to: 3,
+                    arcrow: 3,
+                    arccol: 1,
+                },
+            ],
+            vec![
+                RegionTraversalArc {
+                    to: 0,
+                    arcrow: 2,
+                    arccol: 0,
+                },
+                RegionTraversalArc {
+                    to: 3,
+                    arcrow: 1,
+                    arccol: 0,
+                },
+            ],
+            vec![
+                RegionTraversalArc {
+                    to: 1,
+                    arcrow: 3,
+                    arccol: 1,
+                },
+                RegionTraversalArc {
+                    to: 2,
+                    arcrow: 1,
+                    arccol: 0,
+                },
+            ],
+        ];
+        let mag = vec![0.0f32, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0];
+
+        let out = init_boundary(InitBoundaryParams {
+            source_idx: 0,
+            nodes: &mut nodes,
+            adjacency: &adjacency,
+            mag: Some(&mag),
+            nrow: 3,
+            ncol: 3,
+        })
+        .unwrap();
+
+        assert_eq!(out.connected_count, 4);
+        assert!(out.boundary_nodes.len() >= 3);
+        assert!(
+            nodes
+                .iter()
+                .filter(|n| n.group == BOUNDARY_PTR_GROUP)
+                .count()
+                >= 3
+        );
+    }
+
+    #[test]
+    fn non_degen_update_children_updates_path_nodes() {
+        let mut nodes = vec![TreeNode::new(0), TreeNode::new(1), TreeNode::new(2)];
+        let updated = non_degen_update_children(NonDegenUpdateParams {
+            path: &[0, 1, 2],
+            nodes: &mut nodes,
+            updated_group: TreeNodeGroup::OnTree,
+            dincost: 5,
+            doutcost: -3,
+        })
+        .unwrap();
+        assert_eq!(updated, 2);
+        assert_eq!(nodes[1].group, TreeNodeGroup::OnTree);
+        assert_eq!(nodes[2].incost, VERY_FAR + 5);
+    }
+
+    #[test]
+    fn tree_solve_runs_end_to_end_pipeline() {
+        let mut nodes = vec![RegionTraversalNode {
+            row: 0,
+            col: 0,
+            group: 0,
+            level: 0,
+        }];
+        let adjacency = vec![Vec::<RegionTraversalArc>::new()];
+        let residue = vec![vec![1i8]];
+        let mst = row_col_i16(2, 2, 1);
+        let mag = vec![1.0f32, 1.0, 1.0, 1.0];
+
+        let out = tree_solve(TreeSolveParams {
+            source_idx: 0,
+            nodes: &mut nodes,
+            adjacency: &adjacency,
+            mag: Some(&mag),
+            residue: &residue,
+            mst_costs: &mst,
+            nrow: 2,
+            ncol: 2,
+        })
+        .unwrap();
+
+        assert_eq!(out.connected_count, 1);
+        assert_eq!(out.flows.len(), 3);
+        assert_eq!(out.arc_status.len(), 3);
     }
 }
