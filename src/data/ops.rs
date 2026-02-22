@@ -112,6 +112,18 @@ pub fn l_clip(value: i32, min: i32, max: i32) -> i32 {
     }
 }
 
+/// Returns `true` if the 2-D array contains only finite samples.
+pub fn valid_data_array(data: &[f32], rows: usize, cols: usize) -> bool {
+    validate_len(data.len(), rows, cols);
+    data.iter().all(|v| v.is_finite())
+}
+
+/// Returns `true` if the 2-D array contains only non-negative samples.
+pub fn non_neg_data_array(data: &[f32], rows: usize, cols: usize) -> bool {
+    validate_len(data.len(), rows, cols);
+    data.iter().all(|v| *v >= 0.0)
+}
+
 /// Equivalent of the C `LRound` helper (round-to-nearest with ties -> even).
 pub fn l_round(value: f64) -> i64 {
     value.round_ties_even() as i64
@@ -227,6 +239,13 @@ where
     }
 
     Some(dst)
+}
+
+fn validate_len(actual: usize, rows: usize, cols: usize) {
+    let expected = rows
+        .checked_mul(cols)
+        .expect("rows*cols would overflow when validating array length");
+    assert_eq!(actual, expected, "array length mismatch");
 }
 
 /// 1-D linear interpolation that clamps to the array bounds.
@@ -365,6 +384,24 @@ mod tests {
         assert_eq!(l_clip(5, 0, 10), 5);
         assert_eq!(l_clip(-1, 0, 10), 0);
         assert_eq!(l_clip(15, 0, 10), 10);
+    }
+
+    #[test]
+    fn valid_data_array_checks_finiteness() {
+        let data = vec![0.0f32, 1.0, 2.0, -3.5];
+        assert!(valid_data_array(&data, 2, 2));
+        let mut data = data;
+        data[2] = f32::INFINITY;
+        assert!(!valid_data_array(&data, 2, 2));
+    }
+
+    #[test]
+    fn non_neg_data_array_checks_sign() {
+        let data = vec![0.0f32, 1.0, 2.0, 3.0];
+        assert!(non_neg_data_array(&data, 2, 2));
+        let mut data = data;
+        data[3] = -0.1;
+        assert!(!non_neg_data_array(&data, 2, 2));
     }
 
     #[test]
