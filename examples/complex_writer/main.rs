@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Parser)]
-#[command(about = "Generate a synthetic interferogram and optionally unwrap it with snaphu")] 
+#[command(about = "Generate a synthetic interferogram and optionally unwrap it with snaphu")]
 struct Args {
     /// Number of columns in the generated interferogram
     #[arg(long, default_value_t = 1024)]
@@ -50,7 +50,11 @@ struct Args {
     write_png: bool,
 }
 
-pub fn read_float_file(path: impl AsRef<Path>, width: usize, height: usize) -> io::Result<Vec<f32>> {
+pub fn read_float_file(
+    path: impl AsRef<Path>,
+    width: usize,
+    height: usize,
+) -> io::Result<Vec<f32>> {
     let mut file = File::open(path.as_ref())?;
 
     // Validate file size
@@ -158,7 +162,7 @@ pub fn read_alt_line_file(
     let mut data_1 = Vec::with_capacity(width * height);
     for (i, chunk) in buf.chunks_exact(4).enumerate() {
         let sample = f32::from_ne_bytes(chunk.try_into().unwrap());
-        if (i / width) % 2 == 0 {
+        if (i / width).is_multiple_of(2) {
             data_0.push(sample);
         } else {
             data_1.push(sample);
@@ -212,8 +216,7 @@ where
             img.put_pixel(j as u32, i as u32, pixel);
         }
     }
-    img.save(path.as_ref())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    img.save(path.as_ref()).map_err(io::Error::other)
 }
 
 pub fn log_rerun_img_from_phase(
@@ -309,22 +312,25 @@ fn run_snaphu_and_read_products(
 ) -> io::Result<(Vec<f32>, Vec<f32>)> {
     let output = run_snaphu(binary, input_path, width, output_path, extra_args)?;
     if !output.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "snaphu exited with {:?}:\nstdout: {}\nstderr: {}",
-                output.status.code(),
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "snaphu exited with {:?}:\nstdout: {}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )));
     }
 
     if !output.stdout.is_empty() {
-        println!("snaphu stdout:\n{}", String::from_utf8_lossy(&output.stdout));
+        println!(
+            "snaphu stdout:\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
     if !output.stderr.is_empty() {
-        eprintln!("snaphu stderr:\n{}", String::from_utf8_lossy(&output.stderr));
+        eprintln!(
+            "snaphu stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     read_alt_line_file(output_path, width, height)
@@ -355,9 +361,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Saved wrapped interferogram to {}", wrapped_path.display());
 
     if args.write_png {
-        write_png_file(&png_path, args.width, args.height, |row, col| {
-            phase_field.sample_complex(row, col)
-        }, cmap)?;
+        write_png_file(
+            &png_path,
+            args.width,
+            args.height,
+            |row, col| phase_field.sample_complex(row, col),
+            cmap,
+        )?;
         println!("Saved PNG visualization to {}", png_path.display());
     }
 

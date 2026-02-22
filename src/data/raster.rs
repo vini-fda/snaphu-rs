@@ -11,10 +11,18 @@ pub struct Raster<T> {
 
 impl<T> Raster<T> {
     pub fn new(width: usize, height: usize, data: Vec<T>) -> Self {
-        Self { width, height, data }
+        Self {
+            width,
+            height,
+            data,
+        }
     }
 
     pub fn len(&self) -> usize {
         self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }

@@ -209,7 +209,7 @@ where
 
 /// 1-D linear interpolation that clamps to the array bounds.
 pub fn lin_interp_1d(arr: &[f32], index: f64) -> f32 {
-    assert!(arr.len() >= 1, "interpolation array must not be empty");
+    assert!(!arr.is_empty(), "interpolation array must not be empty");
     let int_part = index.floor();
     if int_part < 0.0 {
         return arr[0];
@@ -272,7 +272,7 @@ mod tests {
         let padded = vec![1.0, 2.0, 3.0, 0.0, 4.0, 5.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let mut output = vec![0.0; 6];
         box_car_average(&mut output, &padded, 2, 3, 2, 2);
-        let expected = vec![3.0, 4.0, 2.25, 2.25, 2.75, 1.5];
+        let expected = [3.0, 4.0, 2.25, 2.25, 2.75, 1.5];
         for (got, want) in output.iter().zip(expected.iter()) {
             assert!((got - want).abs() < 1e-5, "{} vs {}", got, want);
         }
@@ -317,12 +317,12 @@ mod tests {
         }
 
         // Sample a few mirrored positions, matching the original index math.
-        assert_eq!(padded[0 * padded_cols + 0], data[1 * cols + 1]);
-        assert_eq!(padded[0 * padded_cols + 5], data[1 * cols + 2]);
-        assert_eq!(padded[4 * padded_cols + 0], data[1 * cols + 1]);
-        assert_eq!(padded[4 * padded_cols + 5], data[1 * cols + 2]);
-        assert_eq!(padded[1 * padded_cols + 0], data[0 * cols + 1]);
-        assert_eq!(padded[1 * padded_cols + 5], data[0 * cols + 2]);
+        assert_eq!(padded[0], data[cols + 1]);
+        assert_eq!(padded[5], data[cols + 2]);
+        assert_eq!(padded[4 * padded_cols], data[cols + 1]);
+        assert_eq!(padded[4 * padded_cols + 5], data[cols + 2]);
+        assert_eq!(padded[padded_cols], data[1]);
+        assert_eq!(padded[padded_cols + 5], data[2]);
     }
 
     #[test]

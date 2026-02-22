@@ -50,6 +50,10 @@ impl DzrCritLookup {
         self.values.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn values(&self) -> &[f32] {
         &self.values
     }
@@ -161,7 +165,7 @@ pub fn build_dz_rho_max_lookup(
             "rho step must be positive and finite",
         ));
     }
-    if incidence.len() == 0 {
+    if incidence.is_empty() {
         return Err(LookupError::InvalidConfiguration(
             "incidence lookup must contain values",
         ));
@@ -370,7 +374,7 @@ mod tests {
         let tile = TileRegion::new(0, 0, 128, 32);
         let lut = build_dzrcrit_lookup(&tile, &params).unwrap();
         assert_eq!(lut.angle_step(), params.incidence_angle_step);
-        assert!(lut.len() > 0);
+        assert!(!lut.is_empty());
         assert!(lut.values().iter().all(|v| v.is_finite() && *v > 0.0));
     }
 

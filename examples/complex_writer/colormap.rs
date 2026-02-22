@@ -7,7 +7,7 @@ pub fn to_byte(x: f32) -> u8 {
 pub fn cmap(re: f32, im: f32) -> [u8; 3] {
     let mut phase = im.atan2(re);
     if phase < 0.0 {
-        phase = std::f32::consts::TAU + phase;
+        phase += std::f32::consts::TAU;
     }
     // phase normalized to the range [0, 1]
     cubehelix_colormap(phase / std::f32::consts::TAU)

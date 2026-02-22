@@ -69,6 +69,8 @@ where
 mod tests {
     #[test]
     fn placeholder_translation_state() {
-        assert!(cfg!(feature = "legacy-cli"));
+        const {
+            assert!(cfg!(feature = "legacy-cli"));
+        }
     }
 }

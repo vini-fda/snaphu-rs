@@ -18,4 +18,4 @@ pub const MAX_ITERATIONS: usize = 5_000;
 pub const BIGGEST_DZ_RHO_MAX: f64 = 10_000.0;
 
 /// Square root of 1/2, reused when converting between angles.
-pub const SQRT_HALF: f64 = 0.707_106_781_186_547_6;
+pub const SQRT_HALF: f64 = std::f64::consts::FRAC_1_SQRT_2;
