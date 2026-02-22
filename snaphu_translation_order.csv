@@ -148,7 +148,7 @@ ScanRegion,5,DONE
 SelectConnNodeSource,4,
 SelectSources,3,
 Set2DShortArray,5,DONE
-SetBooleanSignedChar,4,
+SetBooleanSignedChar,4,DONE
 SetDefaults,1,
 SetDumpAll,1,
 SetGridNetworkFunctionPointers,3,

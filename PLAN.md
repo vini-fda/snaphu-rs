@@ -91,7 +91,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ IO wrappers (`ReadIntensity`, `ReadCorrelation`, `Write2DArray`, `WriteAltLineFile`, `WriteAltSampFile`) now exist as safe typed readers/writers in `io::{reader,writer}`.
    - ✅ Additional graph helpers (`ClosestNode`, `RegionsNeighborNode`, `ScanRegion`, `CheckLeaf`, `CheckBoundary`) are now available in `network::mod` with explicit traversal/consistency tests.
    - ✅ `TraceSecondaryArc` now has a typed translation in `unwrapping::tiles`, split into cost-profile tracing and secondary-graph registration helpers, with convergence/zero-cost/reuse path tests.
-   - ✅ Config parsing helpers `StringToDouble`/`StringToLong` now live in `config::mod`, preserving SNAPHU's full-string parse checks, infinity/overflow guards, and legacy empty-string edge behavior.
+   - ✅ Config parsing helpers `StringToDouble`/`StringToLong`/`SetBooleanSignedChar` now live in `config::mod`, preserving SNAPHU's full-string parse checks, infinity/overflow guards, legacy empty-string edge behavior, and signed-char boolean assignment semantics.
    - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
     - Group remaining Priority ≥5 helpers into clearer buckets so they can be tackled incrementally:
       * Memory allocators / deallocators (Get2DMem, Free2DArray, Read/Write2D) – replace with Vec-backed helpers or document why to skip)

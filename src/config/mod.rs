@@ -81,6 +81,23 @@ pub fn string_to_long(input: &str) -> Option<c_long> {
     }
 }
 
+/// Sets a signed-char style boolean (`1` or `0`) from a config token.
+///
+/// Returns `true` when the input is invalid (matching the C function's
+/// "bad parameter" return value), otherwise writes to `boolptr` and
+/// returns `false`.
+pub fn set_boolean_signed_char(boolptr: &mut i8, input: &str) -> bool {
+    if is_true(input) {
+        *boolptr = 1;
+        false
+    } else if is_false(input) {
+        *boolptr = 0;
+        false
+    } else {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +165,26 @@ mod tests {
         assert_eq!(string_to_long("abc"), None);
         assert_eq!(string_to_long(&c_long::MAX.to_string()), None);
         assert_eq!(string_to_long(&c_long::MIN.to_string()), None);
+    }
+
+    #[test]
+    fn set_boolean_signed_char_sets_truthy_values() {
+        let mut value = -1;
+        assert!(!set_boolean_signed_char(&mut value, "YES"));
+        assert_eq!(value, 1);
+    }
+
+    #[test]
+    fn set_boolean_signed_char_sets_falsy_values() {
+        let mut value = -1;
+        assert!(!set_boolean_signed_char(&mut value, "No"));
+        assert_eq!(value, 0);
+    }
+
+    #[test]
+    fn set_boolean_signed_char_rejects_invalid_values_without_mutating() {
+        let mut value = 7;
+        assert!(set_boolean_signed_char(&mut value, "maybe"));
+        assert_eq!(value, 7);
     }
 }
