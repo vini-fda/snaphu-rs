@@ -503,6 +503,121 @@ pub fn calc_flow(phase: &[f32], nrow: usize, ncol: usize) -> Vec<i16> {
     flows
 }
 
+/// Computes the residue array for a wrapped phase raster.
+///
+/// Equivalent to C `CycleResidue()`. The output has shape
+/// `(nrow-1) x (ncol-1)` and is stored row-major.
+pub fn cycle_residue(phase: &[f32], nrow: usize, ncol: usize) -> Vec<i8> {
+    validate_len(phase.len(), nrow, ncol);
+    if nrow < 2 || ncol < 2 {
+        return Vec::new();
+    }
+
+    let idx = |r: usize, c: usize| r * ncol + c;
+    let mut rowdiff = vec![0.0f64; (nrow - 1) * ncol];
+    let mut coldiff = vec![0.0f64; nrow * (ncol - 1)];
+
+    for row in 0..(nrow - 1) {
+        for col in 0..ncol {
+            rowdiff[row * ncol + col] =
+                mod_diff(phase[idx(row + 1, col)] as f64, phase[idx(row, col)] as f64);
+        }
+    }
+
+    for row in 0..nrow {
+        for col in 0..(ncol - 1) {
+            coldiff[row * (ncol - 1) + col] =
+                mod_diff(phase[idx(row, col + 1)] as f64, phase[idx(row, col)] as f64);
+        }
+    }
+
+    let mut residue = vec![0i8; (nrow - 1) * (ncol - 1)];
+    for row in 0..(nrow - 1) {
+        for col in 0..(ncol - 1) {
+            let wrapped_sum = coldiff[row * (ncol - 1) + col] + rowdiff[row * ncol + col + 1]
+                - coldiff[(row + 1) * (ncol - 1) + col]
+                - rowdiff[row * ncol + col];
+            let value = l_round(wrapped_sum / TWO_PI);
+            residue[row * (ncol - 1) + col] =
+                i8::try_from(value).expect("cycle residue exceeds i8 range");
+        }
+    }
+
+    residue
+}
+
+/// Integrates wrapped phase and row/col flows into an unwrapped phase field.
+///
+/// Equivalent to C `IntegratePhase()`.
+pub fn integrate_phase(psi: &[f32], flows: &[i16], nrow: usize, ncol: usize) -> Vec<f32> {
+    validate_len(psi.len(), nrow, ncol);
+    assert!(nrow >= 1 && ncol >= 1, "phase grid must be at least 1x1");
+
+    let row_arc_count = (nrow - 1) * ncol;
+    let col_arc_count = nrow * (ncol - 1);
+    assert_eq!(
+        flows.len(),
+        row_arc_count + col_arc_count,
+        "flow array length does not match row-col layout"
+    );
+
+    let idx = |r: usize, c: usize| r * ncol + c;
+    let mut phi = vec![0.0f32; nrow * ncol];
+    phi[0] = psi[0];
+
+    let col_base = row_arc_count;
+    for col in 1..ncol {
+        let col_flow = flows[col_base + (col - 1)] as f64;
+        let delta =
+            mod_diff(psi[idx(0, col)] as f64, psi[idx(0, col - 1)] as f64) + col_flow * TWO_PI;
+        phi[idx(0, col)] = (phi[idx(0, col - 1)] as f64 + delta) as f32;
+    }
+
+    for row in 1..nrow {
+        for col in 0..ncol {
+            let row_flow = flows[(row - 1) * ncol + col] as f64;
+            let delta = mod_diff(psi[idx(row, col)] as f64, psi[idx(row - 1, col)] as f64)
+                - row_flow * TWO_PI;
+            phi[idx(row, col)] = (phi[idx(row - 1, col)] as f64 + delta) as f32;
+        }
+    }
+
+    phi
+}
+
+/// Derives wrapped phase and row/col flows from an unwrapped phase field.
+///
+/// Equivalent to C `ExtractFlow()`.
+pub fn extract_flow(unwrapped_phase: &[f32], nrow: usize, ncol: usize) -> (Vec<f32>, Vec<i16>) {
+    validate_len(unwrapped_phase.len(), nrow, ncol);
+    let mut wrapped_phase = vec![0.0f32; unwrapped_phase.len()];
+    for (dst, src) in wrapped_phase.iter_mut().zip(unwrapped_phase.iter()) {
+        let v = *src as f64;
+        *dst = (v - TWO_PI * (v / TWO_PI).floor()) as f32;
+    }
+    let flows = calc_flow(unwrapped_phase, nrow, ncol);
+    (wrapped_phase, flows)
+}
+
+/// Flips row/col flow signs when phase-sign flipping is enabled.
+///
+/// Equivalent to C `FlipFlowArraySign()`.
+pub fn flip_flow_array_sign(flows: &mut [i16], nrow: usize, ncol: usize, flip_phase_sign: bool) {
+    let row_arc_count = (nrow - 1) * ncol;
+    let col_arc_count = nrow * (ncol - 1);
+    assert_eq!(
+        flows.len(),
+        row_arc_count + col_arc_count,
+        "flow array length does not match row-col layout"
+    );
+
+    if flip_phase_sign {
+        for flow in flows.iter_mut() {
+            *flow = flow.wrapping_neg();
+        }
+    }
+}
+
 /// Adaptive geometric (directional) despeckle filter for magnitude data.
 ///
 /// Filters using 8 directional arms of length `ARMLEN` around each pixel.
@@ -926,5 +1041,48 @@ mod tests {
         let phase = vec![0.0, p, 2.0 * p, p, 2.0 * p, 3.0 * p];
         let flow = calc_flow(&phase, 2, 3);
         assert_eq!(flow, vec![-1, -1, -1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn cycle_residue_is_zero_for_consistent_wrapped_phase() {
+        let phase = vec![0.0f32, 0.5, 1.0, 0.5, 1.0, 1.5, 1.0, 1.5, 2.0];
+        let residue = cycle_residue(&phase, 3, 3);
+        assert_eq!(residue, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn integrate_phase_reconstructs_known_field_from_flows() {
+        let p = std::f32::consts::TAU;
+        let wrapped = vec![0.0f32; 6];
+        let flows = vec![-1, -1, -1, 1, 1, 1, 1];
+        let unwrapped = integrate_phase(&wrapped, &flows, 2, 3);
+        let expected = vec![0.0, p, 2.0 * p, p, 2.0 * p, 3.0 * p];
+        for (got, want) in unwrapped.iter().zip(expected.iter()) {
+            assert!((*got - *want).abs() < 1e-5, "{got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn extract_flow_returns_wrapped_phase_and_flow_layout() {
+        let p = std::f32::consts::TAU;
+        let phase = vec![0.0, p, 2.0 * p, p, 2.0 * p, 3.0 * p];
+        let (wrapped, flow) = extract_flow(&phase, 2, 3);
+        assert!(wrapped.iter().all(|v| v.abs() < 1e-5));
+        assert_eq!(flow, vec![-1, -1, -1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn flip_flow_array_sign_toggles_all_arcs_when_enabled() {
+        let mut flow = vec![1i16, -2, 3, -4, 5, -6, i16::MIN];
+        flip_flow_array_sign(&mut flow, 2, 3, true);
+        assert_eq!(flow, vec![-1, 2, -3, 4, -5, 6, i16::MIN]);
+    }
+
+    #[test]
+    fn flip_flow_array_sign_keeps_values_when_disabled() {
+        let mut flow = vec![1i16, -2, 3, -4, 5, -6, 7];
+        let original = flow.clone();
+        flip_flow_array_sign(&mut flow, 2, 3, false);
+        assert_eq!(flow, original);
     }
 }

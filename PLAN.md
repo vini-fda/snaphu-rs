@@ -88,10 +88,12 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Weight reader `ReadWeightsFile` now lives in `io::reader`, supporting uniform default weights and clipping negative on-disk weights to zero like the C implementation.
    - ✅ Packed arc readers `Read2DRowColFile`/`Read2DRowColFileRows` are available in `io::reader` as typed row/column extraction helpers, preserving block offsets and tile slicing rules from the C implementation.
    - ✅ Tree frontier helper `AddNewNode` now lives in `network::mod`, with explicit bucket-window semantics (`minind/maxind/curr`) and regression tests for reinsert, underflow, overflow, and predecessor-forced updates.
-   - ✅ Flow/residue helpers (`CalcFlow`, `NodeResidue`) are now implemented in `data::ops` with row/column-layout parity tests.
+   - ✅ Flow/residue helpers (`CalcFlow`, `CycleResidue`, `NodeResidue`, `IntegratePhase`, `ExtractFlow`, `FlipFlowArraySign`) are now implemented in `data::ops` with row/column-layout parity tests.
+   - ✅ Region-growing cost smoother `ThickenCosts` now exists in `costs::types`, preserving row/column arc convolution and `LARGESHORT` clipping semantics.
    - ✅ EI/intensity helpers (`RemoveMean`, `SolveEIModelParams`) are now translated with typed Rust APIs (`data::ops` + `costs::lookup`) and validation coverage.
    - ✅ IO wrappers (`ReadIntensity`, `ReadCorrelation`, `Write2DArray`, `Write2DRowColArray`, `WriteAltLineFile`, `WriteAltSampFile`) now exist as safe typed readers/writers in `io::{reader,writer}`.
    - ✅ Additional graph helpers (`ClosestNode`, `RegionsNeighborNode`, `ScanRegion`, `CheckLeaf`, `CheckBoundary`) are now available in `network::mod` with explicit traversal/consistency tests.
+   - ✅ Network topology selectors (`SetGridNetworkFunctionPointers`, `SetNonGridNetworkFunctionPointers`) are represented in `network::mod` with explicit typed mode selection.
    - ✅ `TraceSecondaryArc` now has a typed translation in `unwrapping::tiles`, split into cost-profile tracing and secondary-graph registration helpers, with convergence/zero-cost/reuse path tests.
    - ✅ Config parsing helpers `StringToDouble`/`StringToLong`/`SetBooleanSignedChar` now live in `config::mod`, preserving SNAPHU's full-string parse checks, infinity/overflow guards, legacy empty-string edge behavior, and signed-char boolean assignment semantics.
    - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.

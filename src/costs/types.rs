@@ -164,6 +164,81 @@ impl IncrCost {
     }
 }
 
+/// Smooth region-growing incremental costs and store results in `negcost`.
+///
+/// Equivalent to C `ThickenCosts()`. The function convolves `poscost` values
+/// along row arcs and column arcs separately and writes the smoothed value to
+/// `negcost`, clipping to `LARGE_SHORT` when needed. Returns the maximum
+/// `negcost` written.
+pub fn thicken_costs(incrcosts: &mut [IncrCost], nrow: usize, ncol: usize) -> i64 {
+    assert!(nrow >= 1 && ncol >= 1, "dimensions must be at least 1x1");
+    let row_arc_count = (nrow - 1) * ncol;
+    let col_arc_count = nrow * (ncol - 1);
+    assert_eq!(
+        incrcosts.len(),
+        row_arc_count + col_arc_count,
+        "incrcosts length does not match row-col layout"
+    );
+
+    let idx = |arcrow: usize, arccol: usize| -> usize {
+        if arcrow < nrow - 1 {
+            arcrow * ncol + arccol
+        } else {
+            row_arc_count + (arcrow - (nrow - 1)) * (ncol - 1) + arccol
+        }
+    };
+
+    let mut maxcost = i64::MIN;
+
+    for row in 0..(nrow - 1) {
+        for col in 0..ncol {
+            let mut accum = 2_i64 * incrcosts[idx(row, col)].poscost as i64;
+            let mut n = 2.0;
+            if col != 0 {
+                accum += incrcosts[idx(row, col - 1)].poscost as i64;
+                n += 1.0;
+            }
+            if col != ncol - 1 {
+                accum += incrcosts[idx(row, col + 1)].poscost as i64;
+                n += 1.0;
+            }
+            let mut thick = (accum as f64 / n).round_ties_even() as i64;
+            if thick > LARGE_SHORT as i64 {
+                thick = LARGE_SHORT as i64;
+            }
+            incrcosts[idx(row, col)].negcost = thick as i16;
+            if thick > maxcost {
+                maxcost = thick;
+            }
+        }
+    }
+
+    for row in (nrow - 1)..(2 * nrow - 1) {
+        for col in 0..(ncol - 1) {
+            let mut accum = 2_i64 * incrcosts[idx(row, col)].poscost as i64;
+            let mut n = 2.0;
+            if row != nrow - 1 {
+                accum += incrcosts[idx(row - 1, col)].poscost as i64;
+                n += 1.0;
+            }
+            if row != 2 * nrow - 2 {
+                accum += incrcosts[idx(row + 1, col)].poscost as i64;
+                n += 1.0;
+            }
+            let mut thick = (accum as f64 / n).round_ties_even() as i64;
+            if thick > LARGE_SHORT as i64 {
+                thick = LARGE_SHORT as i64;
+            }
+            incrcosts[idx(row, col)].negcost = thick as i16;
+            if thick > maxcost {
+                maxcost = thick;
+            }
+        }
+    }
+
+    maxcost
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +335,42 @@ mod tests {
         let ic = IncrCost::default();
         assert_eq!(ic.poscost, 0);
         assert_eq!(ic.negcost, 0);
+    }
+
+    #[test]
+    fn thicken_costs_smooths_row_col_arcs_and_returns_max() {
+        let mut costs = vec![
+            IncrCost::new(10, 0),
+            IncrCost::new(20, 0),
+            IncrCost::new(30, 0),
+            IncrCost::new(40, 0),
+            IncrCost::new(50, 0),
+            IncrCost::new(60, 0),
+            IncrCost::new(70, 0),
+        ];
+        let max = thicken_costs(&mut costs, 2, 3);
+
+        // Row arcs (first 3), then col arcs (last 4)
+        assert_eq!(costs[0].negcost, 13);
+        assert_eq!(costs[1].negcost, 20);
+        assert_eq!(costs[2].negcost, 27);
+        assert_eq!(costs[3].negcost, 47);
+        assert_eq!(costs[4].negcost, 57);
+        assert_eq!(costs[5].negcost, 53);
+        assert_eq!(costs[6].negcost, 63);
+        assert_eq!(max, 63);
+    }
+
+    #[test]
+    fn thicken_costs_clips_to_large_short() {
+        let mut costs = vec![
+            IncrCost::new(i16::MAX, 0),
+            IncrCost::new(i16::MAX, 0),
+            IncrCost::new(i16::MAX, 0),
+            IncrCost::new(i16::MAX, 0),
+        ];
+        let max = thicken_costs(&mut costs, 2, 2);
+        assert!(costs.iter().all(|c| c.negcost == LARGE_SHORT));
+        assert_eq!(max, LARGE_SHORT as i64);
     }
 }

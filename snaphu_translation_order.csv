@@ -36,7 +36,7 @@ ClosestNode,5,DONE
 cs_init,6,NOT_PLANNED
 cs2,5,NOT_PLANNED
 cs2mcfparse,5,NOT_PLANNED
-CycleResidue,4,
+CycleResidue,4,DONE
 Despeckle,5,DONE
 discharge,7,NOT_PLANNED
 DischargeBoundary,4,
@@ -49,13 +49,13 @@ EvalCostLP,0,
 EvalCostLPBiDir,0,
 EvalCostNonGrid,0,
 EvaluateTotalCost,3,
-ExtractFlow,4,
+ExtractFlow,4,DONE
 FindApex,4,
 FindNumPathsOut,4,
 FindScndryNode,6,DONE
 finishup,6,NOT_PLANNED
 FlattenWrappedPhase,3,DONE
-FlipFlowArraySign,3,
+FlipFlowArraySign,3,DONE
 FlipPhaseArraySign,4,DONE
 Free2DArray,6,NOT_PLANNED
 Get2DMem,7,NOT_PLANNED
@@ -75,7 +75,7 @@ InitNetwork,3,
 InitNodeNums,4,
 InitNodes,4,
 InitTree,4,
-IntegratePhase,4,
+IntegratePhase,4,DONE
 IntegrateSecondaryFlows,3,
 IsFalse,5,DONE
 IsFinite,7,DONE
@@ -151,10 +151,10 @@ Set2DShortArray,5,DONE
 SetBooleanSignedChar,4,DONE
 SetDefaults,1,
 SetDumpAll,1,
-SetGridNetworkFunctionPointers,3,
+SetGridNetworkFunctionPointers,3,DONE
 SetLeftEdge,4,
 SetLowerEdge,4,
-SetNonGridNetworkFunctionPointers,3,
+SetNonGridNetworkFunctionPointers,3,DONE
 SetRightEdge,4,
 SetStreamPointers,1,
 SetTileInitOutfile,2,
@@ -174,7 +174,7 @@ StartTimers,2,
 StringToDouble,4,DONE
 StringToLong,4,DONE
 StrNCopy,8,NOT_PLANNED
-ThickenCosts,4,
+ThickenCosts,4,DONE
 TraceRegions,3,
 TraceSecondaryArc,5,DONE
 TreeSolve,3,

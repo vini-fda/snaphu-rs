@@ -13,6 +13,31 @@ pub trait MinCostFlowSolver {
     fn solve(&mut self, graph: &TileGraph) -> Result<(), String>;
 }
 
+/// Selected topology-specific neighbor/arc mapping behavior.
+///
+/// This is the typed Rust equivalent of the C global function-pointer switches
+/// controlled by `SetGridNetworkFunctionPointers()` and
+/// `SetNonGridNetworkFunctionPointers()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkFunctionPointers {
+    Grid,
+    NonGrid,
+}
+
+/// Select grid-network neighbor/arc handlers.
+///
+/// Equivalent to C `SetGridNetworkFunctionPointers()`.
+pub fn set_grid_network_function_pointers() -> NetworkFunctionPointers {
+    NetworkFunctionPointers::Grid
+}
+
+/// Select non-grid (secondary) network neighbor/arc handlers.
+///
+/// Equivalent to C `SetNonGridNetworkFunctionPointers()`.
+pub fn set_non_grid_network_function_pointers() -> NetworkFunctionPointers {
+    NetworkFunctionPointers::NonGrid
+}
+
 /// Error cases for translated network topology helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkError {
@@ -787,6 +812,22 @@ pub fn is_region_edge_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_grid_network_function_pointers_selects_grid_mode() {
+        assert_eq!(
+            set_grid_network_function_pointers(),
+            NetworkFunctionPointers::Grid
+        );
+    }
+
+    #[test]
+    fn set_non_grid_network_function_pointers_selects_non_grid_mode() {
+        assert_eq!(
+            set_non_grid_network_function_pointers(),
+            NetworkFunctionPointers::NonGrid
+        );
+    }
 
     // --- GetArcNumLims ---
 
