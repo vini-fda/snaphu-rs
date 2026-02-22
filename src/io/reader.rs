@@ -48,7 +48,7 @@ pub fn get_n_lines(
     let line_bytes = line_len
         .checked_mul(datasize)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "line-size overflow"))?;
-    if filesize % line_bytes != 0 {
+    if !filesize.is_multiple_of(line_bytes) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("extra data in file {} (bad linelength?)", infile.display()),
@@ -1942,8 +1942,8 @@ mod tests {
         .unwrap();
 
         // Only interior pixels row=1,col=1..2 can survive edge masking.
-        assert_eq!(mag.data[1 * 4 + 1], 1.0);
-        assert_eq!(mag.data[1 * 4 + 2], 0.0); // masked by byte-mask file
+        assert_eq!(mag.data[5], 1.0);
+        assert_eq!(mag.data[6], 0.0); // masked by byte-mask file
         // Border samples must be zero.
         assert_eq!(mag.data[0], 0.0);
         assert_eq!(mag.data[3], 0.0);

@@ -542,8 +542,7 @@ mod tests {
         let requested = std::env::temp_dir()
             .join(format!("snaphu_rs_missing_parent_{}", unique_suffix()))
             .join(format!("out_{}.bin", unique_suffix()));
-        let expected_fallback =
-            Path::new(DEFAULT_DUMP_PATH).join(requested.file_name().unwrap().to_os_string());
+        let expected_fallback = Path::new(DEFAULT_DUMP_PATH).join(requested.file_name().unwrap());
 
         let opened = open_output_file(&requested).unwrap();
         assert!(opened.fell_back);

@@ -511,7 +511,7 @@ where
     let mut refinements = 0usize;
     let mut zerocost: bool;
 
-    let mut incremental = vec![0i64; (2 * params.flowmax) as usize];
+    let mut incremental = vec![0i64; 2 * params.flowmax];
     let mut sumsigsqinv: f64;
 
     loop {
@@ -535,10 +535,11 @@ where
                     clip_large_int(incremental[neg_idx].saturating_add(neg.saturating_sub(nom)));
             }
 
-            if let Some(sigsq) = hop.sigma_sq {
-                if sigsq > 0.0 && sigsq.is_finite() {
-                    sumsigsqinv += 1.0 / sigsq;
-                }
+            if let Some(sigsq) = hop.sigma_sq
+                && sigsq > 0.0
+                && sigsq.is_finite()
+            {
+                sumsigsqinv += 1.0 / sigsq;
             }
         }
 

@@ -422,10 +422,10 @@ pub fn remove_mean(
 ) -> Result<(), RemoveMeanError> {
     validate_len(ei.len(), nrow, ncol);
 
-    if krowei % 2 == 0 {
+    if krowei.is_multiple_of(2) {
         krowei += 1;
     }
-    if kcolei % 2 == 0 {
+    if kcolei.is_multiple_of(2) {
         kcolei += 1;
     }
 
@@ -1056,7 +1056,7 @@ mod tests {
         let wrapped = vec![0.0f32; 6];
         let flows = vec![-1, -1, -1, 1, 1, 1, 1];
         let unwrapped = integrate_phase(&wrapped, &flows, 2, 3);
-        let expected = vec![0.0, p, 2.0 * p, p, 2.0 * p, 3.0 * p];
+        let expected = [0.0, p, 2.0 * p, p, 2.0 * p, 3.0 * p];
         for (got, want) in unwrapped.iter().zip(expected.iter()) {
             assert!((*got - *want).abs() < 1e-5, "{got} vs {want}");
         }

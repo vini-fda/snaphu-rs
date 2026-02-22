@@ -444,6 +444,7 @@ pub struct RegionNeighbor {
 /// - if `to` is already in a bucket, remove it first
 /// - reinsert into an in-range, underflow, or overflow bucket
 /// - update `curr` following the C underflow/in-range rules
+#[allow(clippy::too_many_arguments)]
 pub fn add_new_node(
     from_idx: usize,
     to_idx: usize,
@@ -588,6 +589,7 @@ pub fn mask_nodes(
 /// Return the maximum absolute flow that does not touch masked pixels.
 ///
 /// Equivalent to C `MaxNonMaskFlow()`.
+#[allow(clippy::needless_range_loop)]
 pub fn max_non_mask_flow(
     flows: &[Vec<i16>],
     mag: &[Vec<f32>],
@@ -819,6 +821,7 @@ fn apply_residue_delta(
 /// Equivalent to C `ClipFlow()`. Returns:
 /// - `Ok(true)` when no rerun is needed (already below limit or max-cost guard)
 /// - `Ok(false)` when clipping occurred and the solver should rerun.
+#[allow(clippy::needless_range_loop)]
 pub fn clip_flow(
     residue: &mut [Vec<i8>],
     flows: &mut [Vec<i16>],
@@ -1038,6 +1041,7 @@ pub fn check_leaf(
 /// This is the idiomatic Rust equivalent of C `ScanRegion()`. The caller
 /// supplies explicit graph adjacency (`adjacency`), while region membership
 /// still follows SNAPHU's arc test (`is_region_arc`).
+#[allow(clippy::too_many_arguments)]
 pub fn scan_region(
     start_idx: usize,
     nodes: &mut [RegionTraversalNode],
@@ -1375,10 +1379,10 @@ where
             });
         }
         narcs += expected;
-        for arccol in 0..expected {
+        for (arccol, &flow) in flows[arcrow].iter().take(expected).enumerate() {
             clipped_cost_count += recalc_cost(
                 incrcosts,
-                i64::from(flows[arcrow][arccol]),
+                i64::from(flow),
                 arcrow,
                 arccol,
                 nflow,
@@ -1526,6 +1530,7 @@ pub fn calc_init_max_flow(
 /// Evaluate one arc for reduced-cost violations and optionally add candidate.
 ///
 /// This is the idiomatic Rust equivalent of C `CheckArcReducedCost()`.
+#[allow(clippy::too_many_arguments)]
 pub fn check_arc_reduced_cost(
     from_idx: usize,
     to_idx: usize,
@@ -1897,7 +1902,7 @@ pub fn is_region_edge_node(
         mag[idx(r, col + 1)],
         mag[idx(r + 1, col + 1)],
     ];
-    let has_zero = pixels.iter().any(|&v| v == 0.0);
+    let has_zero = pixels.contains(&0.0);
     let has_nonzero = pixels.iter().any(|&v| v != 0.0);
     has_zero && has_nonzero
 }
@@ -2003,7 +2008,7 @@ mod tests {
     fn grid_node_any_nonzero_returns_zero() {
         // 3×3 raster with one nonzero pixel at (1,1).
         let mut mag = vec![0.0f32; 9];
-        mag[1 * 3 + 1] = 1.0;
+        mag[4] = 1.0;
         // Node (0,0) touches pixel (1,1) → not masked.
         assert_eq!(grid_node_mask_status(0, 0, &mag, 3), 0);
         // Node (1,0) does NOT touch pixel (1,1) in its 2×2 — touches
@@ -2015,7 +2020,7 @@ mod tests {
     fn grid_node_only_far_pixel_nonzero() {
         // 3×3 raster with nonzero only at (0,2).
         let mut mag = vec![0.0f32; 9];
-        mag[0 * 3 + 2] = 5.0;
+        mag[2] = 5.0;
         // Node (0,0) surrounds (0,0),(0,1),(1,0),(1,1) — all zero → MASKED.
         assert_eq!(grid_node_mask_status(0, 0, &mag, 3), MASKED);
         // Node (0,1) surrounds (0,1),(0,2),(1,1),(1,2) — (0,2) nonzero → 0.
@@ -2032,7 +2037,7 @@ mod tests {
     fn ground_edge_nonzero_returns_zero() {
         let mut mag = vec![0.0f32; 12]; // 3×4
         // Set a pixel on the left edge.
-        mag[1 * 4 + 0] = 1.0;
+        mag[4] = 1.0;
         assert_eq!(ground_mask_status(&mag, 3, 4), 0);
     }
 
@@ -2040,7 +2045,7 @@ mod tests {
     fn ground_interior_nonzero_still_masked() {
         let mut mag = vec![0.0f32; 12]; // 3×4
         // Set an interior pixel — edges are still all zero.
-        mag[1 * 4 + 1] = 99.0;
+        mag[5] = 99.0;
         assert_eq!(ground_mask_status(&mag, 3, 4), MASKED);
     }
 
@@ -2069,7 +2074,7 @@ mod tests {
     fn region_arc_one_nonzero_returns_true() {
         let mut mag = vec![0.0f32; 12]; // 3×4
         // Row arc at (0,1): pixels (0,1) and (1,1).
-        mag[0 * 4 + 1] = 1.0;
+        mag[1] = 1.0;
         assert!(is_region_arc(Some(&mag), 0, 1, 3, 4));
     }
 
@@ -2078,7 +2083,7 @@ mod tests {
         // Column arc: arcrow >= nrow-1. For nrow=3, arcrow=2 → row = 2-2 = 0
         // pixels (0, arccol) and (0, arccol+1).
         let mut mag = vec![0.0f32; 12]; // 3×4
-        mag[0 * 4 + 2] = 5.0; // pixel (0,2)
+        mag[2] = 5.0; // pixel (0,2)
         assert!(is_region_arc(Some(&mag), 2, 1, 3, 4)); // pixels (0,1)=0, (0,2)=5 → true
     }
 
@@ -2093,7 +2098,7 @@ mod tests {
     fn region_edge_arc_exactly_one_zero() {
         let mut mag = vec![1.0f32; 12]; // 3×4, all nonzero
         // Row arc (0,0): pixels (0,0) and (1,0). Zero out one.
-        mag[1 * 4 + 0] = 0.0;
+        mag[4] = 0.0;
         assert!(is_region_edge_arc(Some(&mag), 0, 0, 3, 4));
     }
 
