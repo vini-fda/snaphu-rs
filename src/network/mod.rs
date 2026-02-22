@@ -7,6 +7,8 @@ pub mod bucket;
 use crate::constants::{GROUNDROW, LARGE_SHORT, MASKED};
 use crate::costs::types::{Cost, IncrCost};
 use crate::data::ops::{cycle_residue, l_round, node_residue, short_2d_row_col_abs_max};
+use cost_scaling_rs::McmfCs2;
+use std::collections::{HashMap, VecDeque};
 
 pub struct TileGraph;
 
@@ -1308,6 +1310,11 @@ pub enum NetworkCostError {
         index: usize,
         len: usize,
     },
+    SolverFailure(String),
+    SolverArcMappingMissing {
+        tail: usize,
+        head: usize,
+    },
 }
 
 const NOSTAT_INIT_MAX_FLOW: i64 = 15;
@@ -2087,6 +2094,13 @@ pub struct TreeSolveResult {
 ///
 /// This is the typed Rust equivalent of C `SolveCS2()`.
 pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCostError> {
+    #[derive(Debug, Clone, Copy)]
+    struct ArcPlacement {
+        arcrow: usize,
+        arccol: usize,
+        sign: i64,
+    }
+
     if params.nrow < 2 || params.ncol < 2 {
         return Err(NetworkCostError::InvalidNetworkDims {
             nrow: params.nrow,
@@ -2095,32 +2109,99 @@ pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCos
     }
     validate_residue_dims(params.residue, params.nrow, params.ncol).map_err(convert_data_error)?;
     validate_flow_dims(params.mst_costs, params.nrow, params.ncol).map_err(convert_data_error)?;
-    let _ = params.cs2_scale_factor;
+    let _scale = params.cs2_scale_factor;
+
+    let residue_rows = params.nrow - 1;
+    let residue_cols = params.ncol - 1;
+    let ground_id = residue_rows * residue_cols + 1;
+    let narcs = (params.nrow - 1) * params.ncol + params.nrow * (params.ncol - 1);
+    let mut solver = McmfCs2::new(ground_id, 2 * narcs);
+
+    let node_id = |row: usize, col: usize| -> usize { row * residue_cols + col + 1 };
+
+    let mut ground_supply = 0i64;
+    for row in 0..residue_rows {
+        for col in 0..residue_cols {
+            // With this arc orientation, node balance is out-in = -residue.
+            let supply = -i64::from(params.residue[row][col]);
+            ground_supply -= supply;
+            solver.set_supply_demand_of_node(node_id(row, col), supply);
+        }
+    }
+    solver.set_supply_demand_of_node(ground_id, ground_supply);
+
+    let mut arc_placement = HashMap::<(usize, usize), VecDeque<ArcPlacement>>::new();
+    let mut register_arc =
+        |tail: usize, head: usize, arcrow: usize, arccol: usize, sign: i64, cost: i64| {
+            solver.set_arc(tail, head, 0, i64::from(LARGE_SHORT), cost);
+            arc_placement
+                .entry((tail, head))
+                .or_default()
+                .push_back(ArcPlacement {
+                    arcrow,
+                    arccol,
+                    sign,
+                });
+        };
+
+    for arcrow in 0..(2 * params.nrow - 1) {
+        let maxcol = if arcrow < params.nrow - 1 {
+            params.ncol
+        } else {
+            params.ncol - 1
+        };
+        for arccol in 0..maxcol {
+            let cost = i64::from(params.mst_costs[arcrow][arccol]);
+            let (tail, head) = if arcrow < params.nrow - 1 {
+                let row = arcrow;
+                if arccol == 0 {
+                    (ground_id, node_id(row, 0))
+                } else if arccol == params.ncol - 1 {
+                    (node_id(row, residue_cols - 1), ground_id)
+                } else {
+                    (node_id(row, arccol - 1), node_id(row, arccol))
+                }
+            } else {
+                let row = arcrow - (params.nrow - 1);
+                if row == 0 {
+                    (ground_id, node_id(0, arccol))
+                } else if row == params.nrow - 1 {
+                    (node_id(residue_rows - 1, arccol), ground_id)
+                } else {
+                    (node_id(row - 1, arccol), node_id(row, arccol))
+                }
+            };
+
+            register_arc(tail, head, arcrow, arccol, 1, cost);
+            register_arc(head, tail, arcrow, arccol, -1, cost);
+        }
+    }
+
+    let solution = solver
+        .min_cost(false, false)
+        .map_err(|err| NetworkCostError::SolverFailure(format!("{err:?}")))?;
 
     let widths = flow_row_lengths(params.nrow, params.ncol);
     let mut flows: Vec<Vec<i16>> = widths.iter().map(|&w| vec![0i16; w]).collect();
-
-    // Simple conservative routing on top row arcs for each residue plaquette.
-    for (row, flow_row) in flows.iter_mut().enumerate().take(params.nrow - 1) {
-        for col in 0..(params.ncol - 1) {
-            let r = i64::from(params.residue[row][col]);
-            if r == 0 {
-                continue;
-            }
-            let lhs = i64::from(flow_row[col]) + r;
-            let rhs = i64::from(flow_row[col + 1]) - r;
-            flow_row[col] = i16::try_from(lhs).map_err(|_| {
-                NetworkCostError::NetworkDataFailure(NetworkDataError::FlowOutOfRange {
-                    value: lhs,
-                })
-            })?;
-            flow_row[col + 1] = i16::try_from(rhs).map_err(|_| {
-                NetworkCostError::NetworkDataFailure(NetworkDataError::FlowOutOfRange {
-                    value: rhs,
-                })
-            })?;
+    for (tail, head, flow) in solution.flows() {
+        if flow <= 0 {
+            continue;
         }
+        let Some(queue) = arc_placement.get_mut(&(tail, head)) else {
+            return Err(NetworkCostError::SolverArcMappingMissing { tail, head });
+        };
+        let Some(placement) = queue.pop_front() else {
+            return Err(NetworkCostError::SolverArcMappingMissing { tail, head });
+        };
+
+        let flow_i64 = flow;
+        let value = i64::from(flows[placement.arcrow][placement.arccol])
+            .saturating_add(placement.sign.saturating_mul(flow_i64));
+        flows[placement.arcrow][placement.arccol] = i16::try_from(value).map_err(|_| {
+            NetworkCostError::NetworkDataFailure(NetworkDataError::FlowOutOfRange { value })
+        })?;
     }
+
     Ok(flows)
 }
 
@@ -4015,7 +4096,7 @@ mod tests {
         .unwrap();
         assert_eq!(flows.len(), 5);
         assert_eq!(flows[0].len(), 3);
-        assert_ne!(flows[0][0], 0);
+        assert!(flows.iter().flatten().any(|&flow| flow != 0));
     }
 
     #[test]

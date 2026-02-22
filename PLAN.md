@@ -47,7 +47,7 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
 4. **Threading**: Plan for future parallelism by keeping state Send/Sync-friendly (Arc-split contexts, `rayon` under feature flag) though the initial port can stay single-threaded.
 
 ## Using `cost_scaling_rs`
-- Add to `Cargo.toml`: `cost_scaling_rs = "0.1.0"`.
+- Add to `Cargo.toml` using the actual package name/source (current workspace setup): `cost_scaling_rs = { package = "cost-scaling-rs", path = "../cost_scaling_rs" }`.
 - Wrap the crate behind `network::MinCostFlowSolver` trait so we can stub it when validating early modules.
 - Translate SNAPHU's `InitCs2`, `SolveMCF`, etc. by mapping their inputs to the solver’s struct-based API.
 - Keep CS2-specific config (`MAXARCS`, scaling tolerances) expressed as Rust consts managed by the network module.
@@ -111,9 +111,9 @@ The slash command `/translate_function [function_name]` will help translate a SN
 4. **Tile assembly & graph prep (Priority 3)** *(PARTIALLY DONE)*
    - ✅ `AssembleTiles`, `AssembleTileConnComps`, `BuildCostArrays`, `GrowRegions`, and `GrowConnCompsMask` are translated with typed APIs.
    - ⏳ `BuildCostArraysNonGrid` and a fuller `TileGraph` conversion surface for solver backends are still pending.
-5. **Network + flow (Priority 2)** *(IN PROGRESS)*
+5. **Network + flow (Priority 2)** *(DONE for current translation scope)*
    - ✅ Typed wrappers/orchestration for `SolveCS2`, `SolveMST`, `DischargeTree`, `InitBoundary`, `NonDegenUpdateChildren`, and `TreeSolve` are present.
-   - ⏳ The `cost_scaling_rs` backend integration is still pending (dependency/adaptor wiring not finished).
+   - ✅ `solve_cs2` is wired to `cost_scaling_rs::McmfCs2` (node supplies, arc construction, solver execution, and row/col flow remapping).
 6. **Entry points (Priority 0–1)** *(IN PROGRESS)*
    - ✅ High-level translated orchestration exists (`CalcCostLP*`, `CalcCostNonGrid`, CLI/config parsing, `Unwrap`, `UnwrapTile`).
    - ⏳ `lib.rs` still defaults to `legacy-cli` and still calls `snaphu_sys::run_main`; native `Snaphu::run()` replacement is pending.
@@ -141,7 +141,7 @@ While translating each CSV-priority batch, update the spreadsheet (or a markdown
 - `just translation_plan --status DONE` => 173 rows.
 - `just translation_plan --status NOT_PLANNED` => 17 rows (deferred low-level allocator/CS2 internals).
 - `cargo test --no-default-features` currently fails due `src/lib.rs` test assertion requiring `legacy-cli`.
-- `Cargo.toml` currently has no `cost_scaling_rs` dependency; backend integration remains pending.
+- `Cargo.toml` includes `cost_scaling_rs` (package `cost-scaling-rs`) and `solve_cs2` is backed by the solver integration.
 
 ## Definition of Done
 1. `cargo test --no-default-features` passes with only the idiomatic Rust implementation (no legacy feature flag required).

@@ -20,6 +20,7 @@ legacy-cli = ["snaphu-sys"]
 snaphu-sys = { version = "0.1.2", optional = true }
 libc = "0.2"
 log = "0.4.29"
+cost_scaling_rs = { package = "cost-scaling-rs", path = "../cost_scaling_rs" }
 
 [dev-dependencies]
 clap = { version = "4.5.20", features = ["derive"] }
