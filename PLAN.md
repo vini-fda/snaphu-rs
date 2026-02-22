@@ -116,7 +116,8 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ `solve_cs2` is wired to `cost_scaling_rs::McmfCs2` (node supplies, arc construction, solver execution, and row/col flow remapping).
 6. **Entry points (Priority 0–1)** *(IN PROGRESS)*
    - ✅ High-level translated orchestration exists (`CalcCostLP*`, `CalcCostNonGrid`, CLI/config parsing, `Unwrap`, `UnwrapTile`).
-   - ⏳ `lib.rs` still defaults to `legacy-cli` and still calls `snaphu_sys::run_main`; native `Snaphu::run()` replacement is pending.
+   - ✅ `run_cli` now has a native Rust execution path (`--no-default-features`) that parses arguments, reads input rasters, runs single-tile unwrap, and writes output.
+   - ⏳ Full CLI parity is still pending (legacy remains default, and native path currently scopes to single-tile/non-quantify workflows).
 
 While translating each CSV-priority batch, update the spreadsheet (or a markdown checklist) with statuses so we know which functions remain.
 
@@ -140,7 +141,7 @@ While translating each CSV-priority batch, update the spreadsheet (or a markdown
 - `just translation_plan --status EMPTY` => no rows.
 - `just translation_plan --status DONE` => 173 rows.
 - `just translation_plan --status NOT_PLANNED` => 17 rows (deferred low-level allocator/CS2 internals).
-- `cargo test --no-default-features` currently fails due `src/lib.rs` test assertion requiring `legacy-cli`.
+- `cargo test --no-default-features` passes (native CLI smoke tests included).
 - `Cargo.toml` includes `cost_scaling_rs` (package `cost-scaling-rs`) and `solve_cs2` is backed by the solver integration.
 
 ## Definition of Done
