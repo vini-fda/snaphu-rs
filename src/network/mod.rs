@@ -6,6 +6,6 @@ pub mod bucket;
 
 pub struct TileGraph;
 
-pub trait FlowSolver {
+pub trait MinCostFlowSolver {
     fn solve(&mut self, graph: &TileGraph) -> Result<(), String>;
 }
