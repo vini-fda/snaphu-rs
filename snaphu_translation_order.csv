@@ -143,7 +143,6 @@ RegionTraceCheckNeighbors,4,
 relabel,8,DONE
 RemoveMean,5,DONE
 RenumberRegion,4,DONE
-run_main,0,
 ScanRegion,5,DONE
 SelectConnNodeSource,4,
 SelectSources,3,
