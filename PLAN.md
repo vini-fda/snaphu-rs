@@ -68,7 +68,8 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
    - ✅ Phase wrapping utilities (`FlattenWrappedPhase`, `WrapPhase`, `ModDiff`) now live in `data::ops`, keeping wrapped values inside `[0, 2π)` and matching the short-cycle behaviour from the C code.
    - ✅ Wrapped-gradient calculators (`CalcWrappedRangeDiffs/AzDiffs`) have idiomatic equivalents in `costs::gradients`, exposing typed outputs for cost builders and reusing the shared boxcar/mirror-pad helpers.
    - ✅ Masking helpers (`MaskCost`, `MaskSmoothCost`, `MaskPrespecifiedArcCosts`) are available in `costs::types` along with strongly typed cost records, so future modules can drop the pointer-heavy c2rust shims.
-   - Remaining work in this phase: mirror padding variants for non-f32 rasters and any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
+   - ✅ Mirror padding now has a `mirror_pad_with_fill` variant that works for any `Copy` type, so non-f32 rasters (e.g. shorts, custom structs) can reuse the same primitive.
+   - Remaining work in this phase: any other Level ≥5 entries still listed in `snaphu_translation_order.csv`.
 3. **Cost builders (Priority 4)**
    - Implement `BuildStatCosts*` in `costs` module, ensuring they only depend on previously translated helpers and `RuntimeState` slices.
    - Provide `CostField` structs to hold per-pixel arrays. Tests should read fixture rasters and verify deterministic bytes vs C output (use small 5×5 samples captured from the original binary).

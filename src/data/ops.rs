@@ -127,23 +127,35 @@ pub fn mirror_pad<T>(
 where
     T: Copy + Default,
 {
+    mirror_pad_with_fill(src, rows, cols, pad_rows, pad_cols, T::default())
+}
+
+/// Mirror pads an array using an explicit fill value for the padded region.
+pub fn mirror_pad_with_fill<T>(
+    src: &[T],
+    rows: usize,
+    cols: usize,
+    pad_rows: usize,
+    pad_cols: usize,
+    fill: T,
+) -> Option<Vec<T>>
+where
+    T: Copy,
+{
     let total = rows
         .checked_mul(cols)
         .expect("rows*cols would overflow when validating source length");
     assert_eq!(src.len(), total, "source length mismatch");
-    if rows == 0 || cols == 0 {
-        return Some(vec![
-            T::default();
-            (rows + 2 * pad_rows) * (cols + 2 * pad_cols)
-        ]);
-    }
     if pad_rows > rows || pad_cols > cols {
         return None;
     }
 
     let padded_rows = rows + 2 * pad_rows;
     let padded_cols = cols + 2 * pad_cols;
-    let mut dst = vec![T::default(); padded_rows * padded_cols];
+    let mut dst = vec![fill; padded_rows * padded_cols];
+    if rows == 0 || cols == 0 {
+        return Some(dst);
+    }
 
     for row in 0..rows {
         let dst_offset = (row + pad_rows) * padded_cols + pad_cols;
@@ -376,6 +388,26 @@ mod tests {
     fn mirror_pad_rejects_large_padding() {
         let data = vec![0.0f32; 4];
         assert!(mirror_pad(&data, 2, 2, 3, 1).is_none());
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Pixel(u8);
+
+    #[test]
+    fn mirror_pad_with_fill_supports_non_default_types() {
+        let src = vec![Pixel(1), Pixel(2), Pixel(3), Pixel(4)];
+        let padded = mirror_pad_with_fill(&src, 2, 2, 1, 1, Pixel(0)).unwrap();
+        let padded_cols = 4;
+        assert_eq!(padded.len(), 16);
+        assert_eq!(padded[padded_cols + 1], Pixel(1));
+        assert_eq!(padded[padded_cols + 2], Pixel(2));
+        assert_eq!(padded[2 * padded_cols + 1], Pixel(3));
+        assert_eq!(padded[2 * padded_cols + 2], Pixel(4));
+        // Corners mirror the interior values.
+        assert_eq!(padded[0], Pixel(4));
+        assert_eq!(padded[3], Pixel(3));
+        assert_eq!(padded[12], Pixel(2));
+        assert_eq!(padded[15], Pixel(1));
     }
 
     #[test]
