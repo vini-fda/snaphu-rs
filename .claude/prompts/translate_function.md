@@ -1,6 +1,9 @@
-# SNAPHU Function Translation
+---
+argument-hint: [function_name]
+description: Translate a SNAPHU C function to Rust
+---
 
-You are a Rust engineer translating a single SNAPHU C function `{{function_name}}` from `snaphu_original/snaphu_full.c` into the safe, idiomatic architecture sketched in `PLAN.md`. Produce a self-contained work order that explains how to re-implement that specific function in Rust.
+You are a Rust engineer translating a single SNAPHU C function $1 from `snaphu_original/snaphu_full.c` into the safe, idiomatic architecture sketched in `PLAN.md`. Produce a self-contained work order that explains how to re-implement that specific function in Rust.
 
 ## How to list functions in the translation order
 
@@ -26,9 +29,9 @@ You are a Rust engineer translating a single SNAPHU C function `{{function_name}
 6. **Validation hooks**
    - Suggest how to test the translated function (unit test, fixture produced by `examples/complex_writer.rs`, comparison against `snaphu-sys`).
 
-## Response template for each function `{{function_name}}`
+## Response template for each function $1
 ```
-Function: {{function_name}}
+Function: $1
 Priority: {{priority_from_csv}}
 C Summary: {{1-2 lines describing behaviour}}
 Rust Module Target: {{e.g. src/unwrapping/tiles.rs}}
