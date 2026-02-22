@@ -1,6 +1,6 @@
 # SNAPHU: C to Rust Translation Plan
 
-The c2rust dump in `src/snaphu_full.rs`, as well as the `snaphu-sys` Rust crate (that provides FFI bindings to the C code), proves the C code can compile, but the end-goal is to hand-write a safe, idiomatic Rust implementation that mirrors SNAPHU's behaviour while isolating state and depending on the published `cost_scaling_rs` crate instead of the vendored CS2 sources. This document lists the constraints, outlines the target Rust architecture, and defines an incremental translation workflow that follows the dependency order captured in `snaphu_translation_order.csv`.
+The c2rust dump in `src/snaphu_full.rs`, as well as the `snaphu-sys` Rust crate (that provides FFI bindings to the C code), proves the C code can compile, but the end-goal is to hand-write a safe, idiomatic Rust implementation that mirrors SNAPHU's behaviour while isolating state and depending on the published `cost_scaling_rs` crate instead of the vendored CS2 sources. This document lists the constraints, outlines the target Rust architecture, and defines an incremental translation workflow that follows the dependency order captured in `snaphu_translation_order.csv`. The bundled `complex_writer/` generator is incorporated as the very first milestone so we can run it via `cargo run --example complex_writer`, visualize wrapped interferograms, and capture authoritative fixtures that feed the translation effort.
 
 ## Guiding Principles
 - **Single source of truth for state**: Replace global variables with explicit structs (e.g. `SnaphuContext`, `UnwrapConfig`, `TileState`). Pass immutable borrows where possible; constrain mutability to focused subsystems.
@@ -32,6 +32,8 @@ src/
   io/
     reader.rs           # image reading, parameter files
     writer.rs           # unwrap results
+examples/
+  complex_writer.rs     # SNAPHU fixture generator + visualization hook (cargo run --example complex_writer)
 ```
 Each module owns its portion of `SnaphuContext`; modules expose small structs with clearly documented inputs/outputs so that translation of one module can be validated before touching others.
 
@@ -51,6 +53,10 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
 - Keep CS2-specific config (`MAXARCS`, scaling tolerances) expressed as Rust consts managed by the network module.
 
 ## Translation Workflow (driven by `snaphu_translation_order.csv`)
+0. **Prepare the `complex_writer` example**
+   - Move `complex_writer/` into the main workspace (or port its logic into `examples/complex_writer.rs`) so it builds with `cargo run --example complex_writer` and picks up shared dependencies.
+   - Remove the hard-coded `SNAPHU_PATH`; instead, accept a CLI flag (defaulting to `snaphu` on `$PATH` or the Rust binary under development) and document how to feed its outputs back into SNAPHU.
+   - Keep the IO + visualization utilities intact and add instructions for saving wrapped/unwrapped/magnitude rasters so they can seed the golden-fixture suite later in this plan.
 1. **Project scaffolding**
    - Move the c2rust translation behind a feature flag (`legacy-cli`) so the new crate can compile during the rewrite. Make sure the code is disabled because (src/snaphu_full.rs) has a LOT of lines of code, which slows downs compile times.
    - Create placeholders for the modules listed above with minimal structs and TODOs.
@@ -81,6 +87,7 @@ While translating each CSV-priority batch, update the spreadsheet (or a markdown
 - **Golden fixtures**: Capture small interferogram tiles + expected unwrap outputs from the C binary. Re-run after each major module to prevent drift.
 - **Property tests**: For cost calculators and lookup tables, assert monotonicity, ranges, and invariants mirrored from SNAPHU docs.
 - **Integration harness**: Keep `snaphu_full.rs` accessible via `cargo test --features legacy-cli` to run the original pipeline as a reference until parity is achieved.
+- **Example-driven datasets**: Use `cargo run --example complex_writer` to regenerate wrapped interferograms on demand, collect the resulting `.bin` / `.out` files, and compare SNAPHU vs SNAPHU-rs outputs to refresh fixtures whenever upstream logic evolves.
 
 ## Risk & Mitigation
 - **Global-state coupling**: Some functions rely on implicit writes; when translating, add temporary logging to the C version to trace which globals each function touches.

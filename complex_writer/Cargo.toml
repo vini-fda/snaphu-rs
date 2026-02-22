@@ -1,0 +1,8 @@
+[package]
+name = "complex_writer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+image = "0.25.9"
+rerun = { version = "0.28.2", default-features = false, features = ["sdk"] }
