@@ -723,6 +723,92 @@ pub fn read_2d_row_col_file<T: NativeSample>(
     })
 }
 
+/// Read only the row-arc block from a packed RowCol file.
+///
+/// This is the idiomatic Rust equivalent of the C `Read2DRowColFileRows()`
+/// helper, where `window.nrow` is interpreted directly as the number of row
+/// rows to read from the row-arc block.
+pub fn read_2d_row_col_file_rows<T: NativeSample>(
+    filename: &Path,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+) -> io::Result<Raster<T>> {
+    if window.nrow == 0 || window.ncol == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "tile window must be at least 1x1",
+        ));
+    }
+    if window.first_row > nlines.saturating_sub(1)
+        || window.first_col > line_len
+        || window.first_row + window.nrow > nlines.saturating_sub(1)
+        || window.first_col + window.ncol > line_len
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "tile window exceeds row-arc block bounds",
+        ));
+    }
+
+    let expected_elements = 2usize
+        .checked_mul(line_len)
+        .and_then(|v| v.checked_mul(nlines))
+        .and_then(|v| v.checked_sub(nlines))
+        .and_then(|v| v.checked_sub(line_len))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "expected element overflow"))?;
+    let expected_size = expected_elements.checked_mul(T::SIZE).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "expected file size overflow")
+    })?;
+
+    let mut fp = File::open(filename)?;
+    let filelen = fp.metadata()?.len() as usize;
+    if filelen != expected_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "file {} wrong size ({} elements expected)",
+                filename.display(),
+                expected_elements
+            ),
+        ));
+    }
+
+    let start = (line_len
+        .checked_mul(window.first_row)
+        .and_then(|v| v.checked_add(window.first_col)))
+    .and_then(|v| v.checked_mul(T::SIZE))
+    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek offset overflow"))?;
+    fp.seek(SeekFrom::Start(start as u64))?;
+
+    let row_bytes = window
+        .ncol
+        .checked_mul(T::SIZE)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "row read width overflow"))?;
+    let pad_bytes = (line_len - window.ncol)
+        .checked_mul(T::SIZE)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "row padding overflow"))?;
+    let pad_skip = i64::try_from(pad_bytes).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "row padding too large to seek")
+    })?;
+
+    let mut rowbuf = vec![0u8; row_bytes];
+    let mut row_data = Vec::with_capacity(window.nrow * window.ncol);
+    for _ in 0..window.nrow {
+        if row_bytes > 0 {
+            fp.read_exact(&mut rowbuf)?;
+            for chunk in rowbuf.chunks_exact(T::SIZE) {
+                row_data.push(T::from_ne_bytes(chunk));
+            }
+        }
+        if pad_skip > 0 {
+            fp.seek(SeekFrom::Current(pad_skip))?;
+        }
+    }
+
+    Ok(Raster::new(window.ncol, window.nrow, row_data))
+}
+
 /// Split a file path into its parent directory and base filename.
 ///
 /// This is the idiomatic Rust equivalent of the C `ParseFilename()` function,
@@ -1079,6 +1165,68 @@ mod tests {
             read_2d_row_col_file::<u16>(&path, 5, 4, TileWindow::new(3, 4, 2, 2)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(err.to_string().contains("tile window"));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_2d_row_col_file_rows_reads_row_arc_slice_only() {
+        let path = temp_file("snaphu_rs_read_row_col_rows_only");
+        let mut fp = File::create(&path).unwrap();
+
+        // Row-arc block: (nlines-1) x line_len = 3 x 5.
+        for row in 0..3u32 {
+            for col in 0..5u32 {
+                let value = (row * 10 + col) as f32;
+                fp.write_all(&value.to_ne_bytes()).unwrap();
+            }
+        }
+        // Col-arc block data should not affect this reader.
+        for row in 0..4u32 {
+            for col in 0..4u32 {
+                let value = (1000 + row * 10 + col) as f32;
+                fp.write_all(&value.to_ne_bytes()).unwrap();
+            }
+        }
+        drop(fp);
+
+        let rows =
+            read_2d_row_col_file_rows::<f32>(&path, 5, 4, TileWindow::new(1, 1, 2, 3)).unwrap();
+        assert_eq!(rows.width, 3);
+        assert_eq!(rows.height, 2);
+        assert_eq!(rows.data, vec![11.0, 12.0, 13.0, 21.0, 22.0, 23.0]);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_2d_row_col_file_rows_rejects_wrong_file_size() {
+        let path = temp_file("snaphu_rs_read_row_col_rows_badsize");
+        let mut fp = File::create(&path).unwrap();
+        fp.write_all(&1u16.to_ne_bytes()).unwrap();
+        drop(fp);
+
+        let err =
+            read_2d_row_col_file_rows::<u16>(&path, 5, 4, TileWindow::new(0, 0, 1, 1)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("wrong size"));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_2d_row_col_file_rows_rejects_out_of_bounds_window() {
+        let path = temp_file("snaphu_rs_read_row_col_rows_bounds");
+        let mut fp = File::create(&path).unwrap();
+        for _ in 0..31 {
+            fp.write_all(&0u16.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let err =
+            read_2d_row_col_file_rows::<u16>(&path, 5, 4, TileWindow::new(3, 0, 1, 1)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("row-arc block bounds"));
 
         fs::remove_file(path).unwrap();
     }
