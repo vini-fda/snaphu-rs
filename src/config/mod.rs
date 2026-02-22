@@ -9,10 +9,260 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-/// Placeholder for the eventual full configuration structure.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostMode {
+    NoStatCosts,
+    Topo,
+    Defo,
+    Smooth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitMethod {
+    Mst,
+    Mcf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InputFiles {
+    pub infile: String,
+    pub weightfile: String,
+    pub corrfile: String,
+    pub ampfile: String,
+    pub ampfile2: String,
+    pub estfile: String,
+    pub magfile: String,
+    pub costinfile: String,
+    pub bytemaskfile: String,
+    pub dotilemaskfile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputFiles {
+    pub initfile: String,
+    pub flowfile: String,
+    pub eifile: String,
+    pub rowcostfile: String,
+    pub colcostfile: String,
+    pub mstrowcostfile: String,
+    pub mstcolcostfile: String,
+    pub mstcostsfile: String,
+    pub corrdumpfile: String,
+    pub rawcorrdumpfile: String,
+    pub costoutfile: String,
+    pub conncompfile: String,
+    pub outfile: String,
+    pub logfile: String,
+}
+
+impl Default for OutputFiles {
+    fn default() -> Self {
+        Self {
+            initfile: String::new(),
+            flowfile: String::new(),
+            eifile: String::new(),
+            rowcostfile: String::new(),
+            colcostfile: String::new(),
+            mstrowcostfile: String::new(),
+            mstcolcostfile: String::new(),
+            mstcostsfile: String::new(),
+            corrdumpfile: String::new(),
+            rawcorrdumpfile: String::new(),
+            costoutfile: String::new(),
+            conncompfile: String::new(),
+            outfile: "snaphu.out".to_string(),
+            logfile: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct RunConfig {
-    pub description: String,
+    pub unwrapped: bool,
+    pub regrow_conn_comps: bool,
+    pub eval: bool,
+    pub init_only: bool,
+    pub init_method: InitMethod,
+    pub cost_mode: CostMode,
+    pub amplitude: bool,
+    pub verbose: bool,
+    pub bperp: f64,
+    pub p: f64,
+    pub onetilereopt: bool,
+    pub rm_tmp_tile: bool,
+    pub rm_tile_init: bool,
+    pub dump_all: bool,
+    pub ntilerow: usize,
+    pub ntilecol: usize,
+    pub rowovrlp: usize,
+    pub colovrlp: usize,
+    pub piecefirstrow: usize,
+    pub piecefirstcol: usize,
+    pub piecenrow: usize,
+    pub piecencol: usize,
+    pub nthreads: usize,
+    pub assemble_only: bool,
+    pub tiledir: String,
+    pub parent_pid: i64,
+    pub earthradius: f64,
+    pub altitude: f64,
+    pub orbitradius: f64,
+    pub baseline: f64,
+    pub ncorrlooks: f64,
+    pub nearrange: f64,
+    pub dr: f64,
+    pub da: f64,
+    pub lambda: f64,
+    pub nshortcycle: i64,
+    pub maxflow: i64,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            unwrapped: false,
+            regrow_conn_comps: false,
+            eval: false,
+            init_only: false,
+            init_method: InitMethod::Mst,
+            cost_mode: CostMode::Topo,
+            amplitude: true,
+            verbose: false,
+            bperp: 0.0,
+            p: -99.999,
+            onetilereopt: false,
+            rm_tmp_tile: true,
+            rm_tile_init: true,
+            dump_all: false,
+            ntilerow: 1,
+            ntilecol: 1,
+            rowovrlp: 0,
+            colovrlp: 0,
+            piecefirstrow: 1,
+            piecefirstcol: 1,
+            piecenrow: 0,
+            piecencol: 0,
+            nthreads: 1,
+            assemble_only: false,
+            tiledir: String::new(),
+            parent_pid: i64::from(std::process::id()),
+            earthradius: 6_378_000.0,
+            altitude: 0.0,
+            orbitradius: 7_153_000.0,
+            baseline: 150.0,
+            ncorrlooks: 23.8,
+            nearrange: 831_000.0,
+            dr: 8.0,
+            da: 20.0,
+            lambda: 0.056_564_7,
+            nshortcycle: 200,
+            maxflow: 4,
+        }
+    }
+}
+
+/// Reset all CLI/runtime structs to their SNAPHU defaults.
+///
+/// This is the idiomatic Rust equivalent of C `SetDefaults()`.
+pub fn set_defaults(infiles: &mut InputFiles, outfiles: &mut OutputFiles, params: &mut RunConfig) {
+    *infiles = InputFiles::default();
+    *outfiles = OutputFiles::default();
+    *params = RunConfig::default();
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckParamsError {
+    EmptyOutputFile,
+    ContradictoryModes(&'static str),
+    InvalidPositiveParam(&'static str),
+    InvalidRange(&'static str),
+    InvalidTileGrid,
+    InvalidThreads,
+    InvalidInputDimensions,
+}
+
+/// Validate runtime parameters before unwrapping starts.
+///
+/// This is the typed Rust equivalent of C `CheckParams()`.
+pub fn check_params(
+    infiles: &InputFiles,
+    outfiles: &OutputFiles,
+    linelen: usize,
+    nlines: usize,
+    params: &RunConfig,
+) -> Result<(), CheckParamsError> {
+    if outfiles.outfile.is_empty() {
+        return Err(CheckParamsError::EmptyOutputFile);
+    }
+    if linelen == 0 || nlines == 0 {
+        return Err(CheckParamsError::InvalidInputDimensions);
+    }
+    if params.init_only && params.unwrapped {
+        return Err(CheckParamsError::ContradictoryModes(
+            "init-only with unwrapped input",
+        ));
+    }
+    if params.init_only && params.p >= 0.0 {
+        return Err(CheckParamsError::ContradictoryModes(
+            "init-only with Lp costs",
+        ));
+    }
+    if matches!(params.cost_mode, CostMode::NoStatCosts) && !(params.init_only || params.p >= 0.0) {
+        return Err(CheckParamsError::ContradictoryModes(
+            "no-statistical-costs without init-only or Lp mode",
+        ));
+    }
+    if matches!(params.cost_mode, CostMode::NoStatCosts) && !infiles.costinfile.is_empty() {
+        return Err(CheckParamsError::ContradictoryModes(
+            "no-statistical-costs with input cost file",
+        ));
+    }
+    if matches!(params.cost_mode, CostMode::NoStatCosts) && !outfiles.costoutfile.is_empty() {
+        return Err(CheckParamsError::ContradictoryModes(
+            "no-statistical-costs with output cost file",
+        ));
+    }
+    if params.earthradius <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("earthradius"));
+    }
+    if params.altitude > 0.0 {
+        if params.earthradius + params.altitude <= params.earthradius {
+            return Err(CheckParamsError::InvalidRange("altitude"));
+        }
+    } else if params.orbitradius < params.earthradius {
+        return Err(CheckParamsError::InvalidRange("orbitradius"));
+    }
+    if matches!(params.cost_mode, CostMode::Topo) && params.baseline < 0.0 {
+        return Err(CheckParamsError::InvalidRange("baseline"));
+    }
+    if params.ncorrlooks <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("ncorrlooks"));
+    }
+    if params.nearrange <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("nearrange"));
+    }
+    if params.dr <= 0.0 || params.da <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("dr/da"));
+    }
+    if params.lambda <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("lambda"));
+    }
+    if params.nshortcycle < 1 || params.nshortcycle > 8192 {
+        return Err(CheckParamsError::InvalidRange("nshortcycle"));
+    }
+    if params.maxflow <= 0 {
+        return Err(CheckParamsError::InvalidPositiveParam("maxflow"));
+    }
+    if params.maxflow.saturating_mul(params.nshortcycle) > 32_000 {
+        return Err(CheckParamsError::InvalidRange("maxflow*nshortcycle"));
+    }
+    if params.ntilerow == 0 || params.ntilecol == 0 {
+        return Err(CheckParamsError::InvalidTileGrid);
+    }
+    if params.nthreads == 0 || params.nthreads > 64 {
+        return Err(CheckParamsError::InvalidThreads);
+    }
+    Ok(())
 }
 
 /// Returns `true` if the string represents a truthy config value.
@@ -389,5 +639,47 @@ mod tests {
         assert!(text.contains("INFILE  wrapped.bin"));
         assert!(text.contains("OUTFILE  snaphu.out"));
         fs::remove_file(written).unwrap();
+    }
+
+    #[test]
+    fn set_defaults_resets_runtime_structs() {
+        let mut infiles = InputFiles {
+            infile: "in.bin".to_string(),
+            ..InputFiles::default()
+        };
+        let mut outfiles = OutputFiles {
+            outfile: "custom.out".to_string(),
+            ..OutputFiles::default()
+        };
+        let mut params = RunConfig {
+            verbose: true,
+            nthreads: 3,
+            ..RunConfig::default()
+        };
+        set_defaults(&mut infiles, &mut outfiles, &mut params);
+        assert_eq!(infiles, InputFiles::default());
+        assert_eq!(outfiles, OutputFiles::default());
+        assert_eq!(params, RunConfig::default());
+    }
+
+    #[test]
+    fn check_params_rejects_contradictory_modes() {
+        let infiles = InputFiles::default();
+        let outfiles = OutputFiles::default();
+        let params = RunConfig {
+            init_only: true,
+            unwrapped: true,
+            ..RunConfig::default()
+        };
+        let err = check_params(&infiles, &outfiles, 128, 64, &params).unwrap_err();
+        assert!(matches!(err, CheckParamsError::ContradictoryModes(_)));
+    }
+
+    #[test]
+    fn check_params_accepts_default_baseline_case() {
+        let infiles = InputFiles::default();
+        let outfiles = OutputFiles::default();
+        let params = RunConfig::default();
+        assert!(check_params(&infiles, &outfiles, 128, 64, &params).is_ok());
     }
 }

@@ -5,6 +5,7 @@
 //! The real CLI implementation will sit here instead of calling directly into
 //! the legacy C entrypoint via `run_cli`.
 
+use crate::config::{CostMode, InitMethod, InputFiles, OutputFiles, RunConfig};
 use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,269 @@ where
     S: AsRef<str>,
 {
     CliArgs::new(args.into_iter().map(|s| s.as_ref().to_string()).collect())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessArgsError {
+    NoArguments,
+    UnknownOption(String),
+    MissingValue(String),
+    InvalidValue { option: String, value: String },
+    NotEnoughPositionalArgs,
+    MultipleInputFiles { first: String, second: String },
+}
+
+fn parse_usize_arg(option: &str, value: &str) -> Result<usize, ProcessArgsError> {
+    value
+        .parse::<usize>()
+        .map_err(|_| ProcessArgsError::InvalidValue {
+            option: option.to_string(),
+            value: value.to_string(),
+        })
+}
+
+fn parse_f64_arg(option: &str, value: &str) -> Result<f64, ProcessArgsError> {
+    value
+        .parse::<f64>()
+        .map_err(|_| ProcessArgsError::InvalidValue {
+            option: option.to_string(),
+            value: value.to_string(),
+        })
+}
+
+fn next_arg(args: &[String], i: &mut usize, option: &str) -> Result<String, ProcessArgsError> {
+    *i += 1;
+    args.get(*i)
+        .cloned()
+        .ok_or_else(|| ProcessArgsError::MissingValue(option.to_string()))
+}
+
+/// Parse CLI arguments into typed config/file structs.
+///
+/// This is the idiomatic Rust equivalent of C `ProcessArgs()`.
+pub fn process_args(
+    raw_args: &[String],
+    infiles: &mut InputFiles,
+    outfiles: &mut OutputFiles,
+    linelen: &mut usize,
+    params: &mut RunConfig,
+) -> Result<(), ProcessArgsError> {
+    if raw_args.len() < 2 {
+        return Err(ProcessArgsError::NoArguments);
+    }
+
+    let mut i = 1usize;
+    while i < raw_args.len() {
+        let arg = &raw_args[i];
+        if arg.starts_with("--") {
+            match arg.as_str() {
+                "--help" => return Err(ProcessArgsError::UnknownOption("--help".to_string())),
+                "--costinfile" => infiles.costinfile = next_arg(raw_args, &mut i, arg)?,
+                "--costoutfile" => outfiles.costoutfile = next_arg(raw_args, &mut i, arg)?,
+                "--debug" | "--dumpall" => params.dump_all = true,
+                "--mst" => params.init_method = InitMethod::Mst,
+                "--mcf" => params.init_method = InitMethod::Mcf,
+                "--aa" => {
+                    infiles.ampfile = next_arg(raw_args, &mut i, arg)?;
+                    infiles.ampfile2 = next_arg(raw_args, &mut i, arg)?;
+                    params.amplitude = true;
+                }
+                "--AA" => {
+                    infiles.ampfile = next_arg(raw_args, &mut i, arg)?;
+                    infiles.ampfile2 = next_arg(raw_args, &mut i, arg)?;
+                    params.amplitude = false;
+                }
+                "--tile" => {
+                    params.ntilerow = parse_usize_arg(arg, &next_arg(raw_args, &mut i, arg)?)?;
+                    params.ntilecol = parse_usize_arg(arg, &next_arg(raw_args, &mut i, arg)?)?;
+                    params.rowovrlp = parse_usize_arg(arg, &next_arg(raw_args, &mut i, arg)?)?;
+                    params.colovrlp = parse_usize_arg(arg, &next_arg(raw_args, &mut i, arg)?)?;
+                }
+                "--piece" => {
+                    params.piecefirstrow = parse_usize_arg(arg, &next_arg(raw_args, &mut i, arg)?)?;
+                    params.piecefirstcol = parse_usize_arg(arg, &next_arg(raw_args, &mut i, arg)?)?;
+                    params.piecenrow = parse_usize_arg(arg, &next_arg(raw_args, &mut i, arg)?)?;
+                    params.piecencol = parse_usize_arg(arg, &next_arg(raw_args, &mut i, arg)?)?;
+                }
+                "--nproc" => {
+                    params.nthreads = parse_usize_arg(arg, &next_arg(raw_args, &mut i, arg)?)?
+                }
+                "--tiledir" => params.tiledir = next_arg(raw_args, &mut i, arg)?,
+                "--assemble" => params.assemble_only = true,
+                "--copyright" | "--info" => {
+                    return Err(ProcessArgsError::UnknownOption(arg.clone()));
+                }
+                _ => return Err(ProcessArgsError::UnknownOption(arg.clone())),
+            }
+            i += 1;
+            continue;
+        }
+
+        if arg.starts_with('-') && arg.len() > 1 {
+            let chars: Vec<char> = arg[1..].chars().collect();
+            let mut j = 0usize;
+            while j < chars.len() {
+                let opt = chars[j];
+                let option_name = format!("-{opt}");
+                let is_last = j + 1 == chars.len();
+                match opt {
+                    'h' => return Err(ProcessArgsError::UnknownOption(option_name)),
+                    'u' => params.unwrapped = true,
+                    't' => params.cost_mode = CostMode::Topo,
+                    'd' => params.cost_mode = CostMode::Defo,
+                    's' => {
+                        params.cost_mode = CostMode::Smooth;
+                    }
+                    'q' => {
+                        params.eval = true;
+                        params.unwrapped = true;
+                    }
+                    'o' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        outfiles.outfile = next_arg(raw_args, &mut i, &option_name)?;
+                        break;
+                    }
+                    'c' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        infiles.corrfile = next_arg(raw_args, &mut i, &option_name)?;
+                        break;
+                    }
+                    'm' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        infiles.magfile = next_arg(raw_args, &mut i, &option_name)?;
+                        break;
+                    }
+                    'M' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        infiles.bytemaskfile = next_arg(raw_args, &mut i, &option_name)?;
+                        break;
+                    }
+                    'a' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        infiles.ampfile = next_arg(raw_args, &mut i, &option_name)?;
+                        params.amplitude = true;
+                        break;
+                    }
+                    'A' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        infiles.ampfile = next_arg(raw_args, &mut i, &option_name)?;
+                        params.amplitude = false;
+                        break;
+                    }
+                    'e' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        infiles.estfile = next_arg(raw_args, &mut i, &option_name)?;
+                        break;
+                    }
+                    'w' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        infiles.weightfile = next_arg(raw_args, &mut i, &option_name)?;
+                        break;
+                    }
+                    'g' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        outfiles.conncompfile = next_arg(raw_args, &mut i, &option_name)?;
+                        break;
+                    }
+                    'G' => {
+                        params.regrow_conn_comps = true;
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        outfiles.conncompfile = next_arg(raw_args, &mut i, &option_name)?;
+                        break;
+                    }
+                    'b' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        params.bperp = parse_f64_arg(
+                            &option_name,
+                            &next_arg(raw_args, &mut i, &option_name)?,
+                        )?;
+                        break;
+                    }
+                    'p' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        params.p = parse_f64_arg(
+                            &option_name,
+                            &next_arg(raw_args, &mut i, &option_name)?,
+                        )?;
+                        break;
+                    }
+                    'i' => params.init_only = true,
+                    'S' => params.onetilereopt = true,
+                    'k' => {
+                        params.rm_tmp_tile = false;
+                        params.rm_tile_init = false;
+                    }
+                    'n' => params.cost_mode = CostMode::NoStatCosts,
+                    'v' => params.verbose = true,
+                    'l' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        outfiles.logfile = next_arg(raw_args, &mut i, &option_name)?;
+                        break;
+                    }
+                    'f' | 'C' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        let _ = next_arg(raw_args, &mut i, &option_name)?;
+                        break;
+                    }
+                    _ => return Err(ProcessArgsError::UnknownOption(option_name)),
+                }
+                j += 1;
+            }
+            i += 1;
+            continue;
+        }
+
+        if infiles.infile.is_empty() {
+            infiles.infile = arg.clone();
+        } else if *linelen == 0 {
+            *linelen = parse_usize_arg("linelen", arg)?;
+            if *linelen == 0 {
+                return Err(ProcessArgsError::InvalidValue {
+                    option: "linelen".to_string(),
+                    value: arg.clone(),
+                });
+            }
+        } else {
+            return Err(ProcessArgsError::MultipleInputFiles {
+                first: infiles.infile.clone(),
+                second: arg.clone(),
+            });
+        }
+        i += 1;
+    }
+
+    if infiles.infile.is_empty() || *linelen == 0 {
+        return Err(ProcessArgsError::NotEnoughPositionalArgs);
+    }
+    Ok(())
 }
 
 /// Signals trapped by C `CatchSignals()`.
@@ -253,6 +517,66 @@ mod tests {
     fn parse_keeps_raw_arguments() {
         let args = parse(["snaphu", "-v", "input.bin"]);
         assert_eq!(args.raw, vec!["snaphu", "-v", "input.bin"]);
+    }
+
+    #[test]
+    fn process_args_parses_basic_short_options_and_positionals() {
+        let mut infiles = InputFiles::default();
+        let mut outfiles = OutputFiles::default();
+        let mut params = RunConfig::default();
+        let mut linelen = 0usize;
+        let args = vec![
+            "snaphu".to_string(),
+            "-v".to_string(),
+            "-d".to_string(),
+            "-o".to_string(),
+            "out.bin".to_string(),
+            "wrapped.bin".to_string(),
+            "512".to_string(),
+        ];
+        process_args(
+            &args,
+            &mut infiles,
+            &mut outfiles,
+            &mut linelen,
+            &mut params,
+        )
+        .unwrap();
+        assert!(params.verbose);
+        assert!(matches!(params.cost_mode, CostMode::Defo));
+        assert_eq!(outfiles.outfile, "out.bin");
+        assert_eq!(infiles.infile, "wrapped.bin");
+        assert_eq!(linelen, 512);
+    }
+
+    #[test]
+    fn process_args_parses_long_tile_args() {
+        let mut infiles = InputFiles::default();
+        let mut outfiles = OutputFiles::default();
+        let mut params = RunConfig::default();
+        let mut linelen = 0usize;
+        let args = vec![
+            "snaphu".to_string(),
+            "--tile".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+            "10".to_string(),
+            "11".to_string(),
+            "in.bin".to_string(),
+            "400".to_string(),
+        ];
+        process_args(
+            &args,
+            &mut infiles,
+            &mut outfiles,
+            &mut linelen,
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(params.ntilerow, 2);
+        assert_eq!(params.ntilecol, 3);
+        assert_eq!(params.rowovrlp, 10);
+        assert_eq!(params.colovrlp, 11);
     }
 
     #[test]

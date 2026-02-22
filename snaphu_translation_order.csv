@@ -13,9 +13,9 @@ BuildDZRhoMaxLookupTable,5,DONE
 BuildStatCostsDefo,4,
 BuildStatCostsSmooth,4,
 BuildStatCostsTopo,4,
-CalcCostLP,0,
-CalcCostLPBiDir,0,
-CalcCostNonGrid,0,
+CalcCostLP,0,DONE
+CalcCostLPBiDir,0,DONE
+CalcCostNonGrid,0,DONE
 CalcDZRhoMax,6,DONE
 CalcFlow,5,DONE
 CalcInitMaxFlow,4,DONE
@@ -27,7 +27,7 @@ CheckArcReducedCost,4,DONE
 CheckBoundary,5,DONE
 CheckLeaf,5,DONE
 CheckMagMasking,3,DONE
-CheckParams,1,
+CheckParams,1,DONE
 ChildResetStreamPointers,2,DONE
 CleanUpBoundaryNodes,4,DONE
 ClearBuckets,4,DONE
@@ -45,9 +45,9 @@ DisplayElapsedTime,2,DONE
 DumpIncrCostFiles,3,DONE
 EIofDZR,6,DONE
 err_end,9,DONE
-EvalCostLP,0,
-EvalCostLPBiDir,0,
-EvalCostNonGrid,0,
+EvalCostLP,0,DONE
+EvalCostLPBiDir,0,DONE
+EvalCostNonGrid,0,DONE
 EvaluateTotalCost,3,DONE
 ExtractFlow,4,DONE
 FindApex,4,DONE
@@ -116,7 +116,7 @@ price_in,7,DONE
 price_out,6,NOT_PLANNED
 price_refine,6,NOT_PLANNED
 price_update,7,DONE
-ProcessArgs,1,
+ProcessArgs,1,DONE
 PruneTree,4,DONE
 Read2DArray,6,DONE
 Read2DRowColFile,5,DONE
@@ -148,7 +148,7 @@ SelectConnNodeSource,4,DONE
 SelectSources,3,DONE
 Set2DShortArray,5,DONE
 SetBooleanSignedChar,4,DONE
-SetDefaults,1,
+SetDefaults,1,DONE
 SetDumpAll,1,DONE
 SetGridNetworkFunctionPointers,3,DONE
 SetLeftEdge,4,DONE
@@ -177,7 +177,7 @@ ThickenCosts,4,DONE
 TraceRegions,3,DONE
 TraceSecondaryArc,5,DONE
 TreeSolve,3,
-Unwrap,1,
+Unwrap,1,DONE
 UnwrapTile,2,
 up_node_scan,8,DONE
 update_epsilon,6,NOT_PLANNED
