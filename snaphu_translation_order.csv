@@ -125,7 +125,7 @@ ReadAltLineFile,6,DONE
 ReadAltLineFilePhase,6,DONE
 ReadAltSampFile,6,DONE
 ReadByteMask,3,
-ReadComplexFile,4,
+ReadComplexFile,4,DONE
 ReadConfigFile,2,
 ReadCorrelation,5,DONE
 ReadEdgesAboveAndBelow,3,

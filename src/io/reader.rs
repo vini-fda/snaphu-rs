@@ -2,6 +2,7 @@
 
 //! File-reading helpers for rasters and metadata.
 
+use crate::constants::TWO_PI_F32;
 use crate::data::ops::{non_neg_data_array, valid_data_array};
 use crate::data::raster::Raster;
 use std::ffi::OsString;
@@ -460,6 +461,112 @@ pub fn read_alt_samp_file(
     Ok((
         Raster::new(window.ncol, window.nrow, arr1_data),
         Raster::new(window.ncol, window.nrow, arr2_data),
+    ))
+}
+
+/// Read interleaved complex float samples (`real,imag,real,imag,...`) and
+/// convert them to magnitude/phase rasters.
+///
+/// This is the idiomatic Rust equivalent of C `ReadComplexFile()`.
+pub fn read_complex_file(
+    rifile: &Path,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+) -> io::Result<(Raster<f32>, Raster<f32>)> {
+    if window.first_row > nlines
+        || window.first_col > line_len
+        || window.first_row + window.nrow > nlines
+        || window.first_col + window.ncol > line_len
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "tile window exceeds source raster bounds",
+        ));
+    }
+
+    let expected_size = 2usize
+        .checked_mul(nlines)
+        .and_then(|v| v.checked_mul(line_len))
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "expected file size overflow")
+        })?;
+
+    let mut fp = File::open(rifile)?;
+    let filesize = fp.metadata()?.len() as usize;
+    if filesize != expected_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "file {} wrong size ({}x{} array expected)",
+                rifile.display(),
+                nlines,
+                line_len
+            ),
+        ));
+    }
+
+    let start_byte = (window
+        .first_row
+        .checked_mul(line_len)
+        .and_then(|v| v.checked_add(window.first_col))
+        .and_then(|v| v.checked_mul(2)))
+    .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek offset overflow"))?;
+    fp.seek(SeekFrom::Start(start_byte as u64))?;
+
+    let row_bytes = window
+        .ncol
+        .checked_mul(2)
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "row read width overflow"))?;
+    let pad_bytes = (line_len - window.ncol)
+        .checked_mul(2)
+        .and_then(|v| v.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "row padding overflow"))?;
+    let pad_skip = i64::try_from(pad_bytes).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "row padding too large to seek")
+    })?;
+
+    let mut mag_data = Vec::with_capacity(window.nrow * window.ncol);
+    let mut phase_data = Vec::with_capacity(window.nrow * window.ncol);
+    let mut rowbuf = vec![0u8; row_bytes];
+    for _ in 0..window.nrow {
+        if row_bytes > 0 {
+            fp.read_exact(&mut rowbuf)?;
+            for pair in rowbuf.chunks_exact(2 * std::mem::size_of::<f32>()) {
+                let re = f32::from_ne_bytes(pair[0..4].try_into().expect("invalid complex sample"));
+                let im = f32::from_ne_bytes(pair[4..8].try_into().expect("invalid complex sample"));
+
+                let mag = (re * re + im * im).sqrt();
+                mag_data.push(mag);
+
+                let phase = if re == 0.0 && im == 0.0 {
+                    0.0
+                } else {
+                    let mut p = im.atan2(re);
+                    if !p.is_finite() {
+                        p = 0.0;
+                    } else if p < 0.0 {
+                        p += TWO_PI_F32;
+                    } else if p >= TWO_PI_F32 {
+                        p -= TWO_PI_F32;
+                    }
+                    p
+                };
+                phase_data.push(phase);
+            }
+        }
+
+        if pad_skip > 0 {
+            fp.seek(SeekFrom::Current(pad_skip))?;
+        }
+    }
+
+    Ok((
+        Raster::new(window.ncol, window.nrow, mag_data),
+        Raster::new(window.ncol, window.nrow, phase_data),
     ))
 }
 
@@ -1097,6 +1204,68 @@ mod tests {
         drop(fp);
 
         let err = read_alt_samp_file(&path, 4, 3, TileWindow::new(2, 3, 2, 2)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("tile window"));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_complex_file_reads_mag_and_wrapped_phase() {
+        let path = temp_file("snaphu_rs_read_complex");
+        let mut fp = File::create(&path).unwrap();
+
+        // 2 lines x 3 complex samples.
+        let samples = [
+            (3.0f32, 4.0f32), // mag=5, phase in Q1
+            (0.0, 0.0),       // forced phase=0
+            (-1.0, 0.0),      // phase=pi
+            (0.0, -1.0),      // phase wrapped to 3pi/2
+            (1.0, 0.0),       // phase=0
+            (0.0, 1.0),       // phase=pi/2
+        ];
+        for (re, im) in samples {
+            fp.write_all(&re.to_ne_bytes()).unwrap();
+            fp.write_all(&im.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let (mag, phase) = read_complex_file(&path, 3, 2, TileWindow::new(0, 0, 2, 3)).unwrap();
+        assert_eq!(mag.width, 3);
+        assert_eq!(mag.height, 2);
+        assert!((mag.data[0] - 5.0).abs() < 1e-6);
+        assert_eq!(phase.data[1], 0.0);
+        assert!((phase.data[2] - std::f32::consts::PI).abs() < 1e-6);
+        assert!((phase.data[3] - 1.5 * std::f32::consts::PI).abs() < 1e-6);
+        assert!((phase.data[5] - 0.5 * std::f32::consts::PI).abs() < 1e-6);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_complex_file_rejects_wrong_file_size() {
+        let path = temp_file("snaphu_rs_read_complex_badsize");
+        let mut fp = File::create(&path).unwrap();
+        fp.write_all(&0.0f32.to_ne_bytes()).unwrap();
+        drop(fp);
+
+        let err = read_complex_file(&path, 3, 2, TileWindow::new(0, 0, 2, 3)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("wrong size"));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_complex_file_rejects_out_of_bounds_window() {
+        let path = temp_file("snaphu_rs_read_complex_bounds");
+        let mut fp = File::create(&path).unwrap();
+        for _ in 0..(2 * 2 * 3) {
+            fp.write_all(&0.0f32.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let err = read_complex_file(&path, 3, 2, TileWindow::new(1, 2, 2, 2)).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(err.to_string().contains("tile window"));
 
