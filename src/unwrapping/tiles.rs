@@ -5,7 +5,8 @@
 //! This module contains the typed Rust translation of secondary-arc tracing
 //! primitives used during tiled unwrapping (`TraceSecondaryArc` in C).
 
-use crate::data::ops::l_round;
+use crate::constants::{LARGE_SHORT, TWO_PI, TWO_PI_F32};
+use crate::data::ops::{avg_sig_sq, l_round};
 use crate::data::tile::TileRegion;
 use crate::io::reader::parse_filename;
 use crate::io::writer::OutputFileFormat;
@@ -18,6 +19,7 @@ use std::path::{Path, PathBuf};
 const LARGE_INT: i64 = 2_000_000_000;
 const ZERO_COST_ARC: i64 = -LARGE_INT;
 const MAX_OFFSET_REFINEMENTS: usize = 64;
+const TILEDPSI_COL_FACTOR: f64 = 0.8;
 const TMP_TILE_DIR_ROOT: &str = "snaphu_tiles_";
 const TILE_INIT_FILE_ROOT: &str = "snaphu_tileinit_";
 const TMP_TILE_ROOT: &str = "tmptile_";
@@ -428,6 +430,913 @@ pub fn set_tile_read_params(
         .saturating_sub(col_trim_tail);
 
     TileRegion::new(first_row, first_col, rows, cols)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TileRegionSnapshot {
+    pub regions: Vec<Vec<i16>>,
+    pub unw_phase: Vec<Vec<f32>>,
+    pub costs: Vec<Vec<i64>>,
+}
+
+pub type TileRegionStore = HashMap<(usize, usize), TileRegionSnapshot>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NeighborTileEdges {
+    pub regions_above: Option<Vec<i16>>,
+    pub regions_below: Option<Vec<i16>>,
+    pub unw_phase_above: Option<Vec<f32>>,
+    pub unw_phase_below: Option<Vec<f32>>,
+    pub costs_above: Option<Vec<i64>>,
+    pub costs_below: Option<Vec<i64>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimaryTraceGroup {
+    NotInBucket,
+    InBucket,
+    OnTree,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrimaryTraceNode {
+    pub pred: Option<TileNodeCoord>,
+    pub group: PrimaryTraceGroup,
+}
+
+impl Default for PrimaryTraceNode {
+    fn default() -> Self {
+        Self {
+            pred: None,
+            group: PrimaryTraceGroup::NotInBucket,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionTraceWorkspace {
+    pub nodes: Vec<Vec<PrimaryTraceNode>>,
+    pub stack: Vec<TileNodeCoord>,
+}
+
+impl RegionTraceWorkspace {
+    pub fn new(nnrow: usize, nncol: usize) -> Self {
+        Self {
+            nodes: vec![vec![PrimaryTraceNode::default(); nncol]; nnrow],
+            stack: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionCrossing {
+    pub head: TileNodeCoord,
+    pub tail: TileNodeCoord,
+    pub fromdir: ArcDirection,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraceRegionsParams<'a> {
+    pub flowmax: usize,
+    pub inputs: FindNumPathsOutInputs<'a>,
+}
+
+#[derive(Debug, Default)]
+pub struct TraceRegionsResult {
+    pub graph: SecondaryGraph,
+    pub total_arc_len: usize,
+    pub fork_nodes: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParseSecondaryFlowsParams<'a> {
+    pub tilenum: usize,
+    pub nrow: usize,
+    pub ncol: usize,
+    pub ntilerow: usize,
+    pub ntilecol: usize,
+    pub flip_phase_sign: bool,
+    pub regions: &'a [Vec<i16>],
+    pub graph: &'a SecondaryGraph,
+    pub arc_indices: &'a [usize],
+    pub secondary_flows: &'a [i16],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedTileFlows {
+    pub row_flows: Vec<Vec<i16>>,
+    pub col_flows: Vec<Vec<i16>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TileIntegrationInput {
+    pub mag: Vec<Vec<f32>>,
+    pub unw_phase: Vec<Vec<f32>>,
+    pub regions: Vec<Vec<i16>>,
+    pub arc_indices: Vec<usize>,
+    pub secondary_flows: Vec<i16>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IntegrateSecondaryFlowsParams<'a> {
+    pub linelen: usize,
+    pub nlines: usize,
+    pub settings: TileReadSettings,
+    pub bulk_offsets: &'a [Vec<i16>],
+    pub flip_phase_sign: bool,
+    pub graph: &'a SecondaryGraph,
+    pub tiles: &'a [TileIntegrationInput],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntegratedSecondaryOutput {
+    pub mag: Vec<Vec<f32>>,
+    pub unw_phase: Vec<Vec<f32>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TileTraceError {
+    MissingTile { tilerow: usize, tilecol: usize },
+    InvalidTileGrid,
+    InvalidTileShape { tilerow: usize, tilecol: usize },
+    InvalidBulkOffsets,
+    InvalidNeighborEdgeLength { expected: usize, got: usize },
+    InvalidRegionShape,
+    InvalidArcIndex { index: usize, len: usize },
+    MismatchedArcFlowLen { arcs: usize, flows: usize },
+    PathTraceDidNotConverge { arc_idx: usize },
+    InvalidPrimaryCoord,
+    FlowOutOfRange { value: i64 },
+}
+
+/// Read one tile snapshot from an in-memory store.
+///
+/// This is the typed Rust equivalent of C `ReadNextRegion()`.
+pub fn read_next_region(
+    tilerow: usize,
+    tilecol: usize,
+    snapshots: &TileRegionStore,
+) -> Result<TileRegionSnapshot, TileTraceError> {
+    snapshots
+        .get(&(tilerow, tilecol))
+        .cloned()
+        .ok_or(TileTraceError::MissingTile { tilerow, tilecol })
+}
+
+/// Read the one-row tile edges above and below the current tile.
+///
+/// This is the typed Rust equivalent of C `ReadEdgesAboveAndBelow()`.
+pub fn read_edges_above_and_below(
+    tilerow: usize,
+    tilecol: usize,
+    ntilerow: usize,
+    snapshots: &TileRegionStore,
+) -> Result<NeighborTileEdges, TileTraceError> {
+    let mut out = NeighborTileEdges {
+        regions_above: None,
+        regions_below: None,
+        unw_phase_above: None,
+        unw_phase_below: None,
+        costs_above: None,
+        costs_below: None,
+    };
+
+    if tilerow != 0 {
+        let above = read_next_region(tilerow - 1, tilecol, snapshots)?;
+        if above.regions.is_empty() || above.unw_phase.is_empty() {
+            return Err(TileTraceError::InvalidTileShape {
+                tilerow: tilerow - 1,
+                tilecol,
+            });
+        }
+        out.regions_above = above.regions.last().cloned();
+        out.unw_phase_above = above.unw_phase.last().cloned();
+        out.costs_above = above.costs.last().cloned();
+    }
+
+    if tilerow != ntilerow.saturating_sub(1) {
+        let below = read_next_region(tilerow + 1, tilecol, snapshots)?;
+        if below.regions.is_empty() || below.unw_phase.is_empty() {
+            return Err(TileTraceError::InvalidTileShape {
+                tilerow: tilerow + 1,
+                tilecol,
+            });
+        }
+        out.regions_below = below.regions.first().cloned();
+        out.unw_phase_below = below.unw_phase.first().cloned();
+        out.costs_below = below.costs.first().cloned();
+    }
+
+    Ok(out)
+}
+
+fn validate_bulk_offsets(
+    bulk_offsets: &[Vec<i16>],
+    ntilerow: usize,
+    ntilecol: usize,
+) -> Result<(), TileTraceError> {
+    if bulk_offsets.len() != ntilerow {
+        return Err(TileTraceError::InvalidBulkOffsets);
+    }
+    for row in bulk_offsets {
+        if row.len() != ntilecol {
+            return Err(TileTraceError::InvalidBulkOffsets);
+        }
+    }
+    Ok(())
+}
+
+fn to_i16_flow(v: i64) -> Result<i16, TileTraceError> {
+    i16::try_from(v).map_err(|_| TileTraceError::FlowOutOfRange { value: v })
+}
+
+fn flow_mode(vals: &[i64]) -> i64 {
+    let mut hist = HashMap::<i64, usize>::new();
+    for &v in vals {
+        *hist.entry(v).or_insert(0) += 1;
+    }
+    let mut best_count = 0usize;
+    let mut best_flow = 0i64;
+    for (&flow, &count) in &hist {
+        if count > best_count || (count == best_count && flow < best_flow) {
+            best_count = count;
+            best_flow = flow;
+        }
+    }
+    best_flow
+}
+
+/// Build top boundary flows for one tile.
+///
+/// This is the typed Rust equivalent of C `SetUpperEdge()`.
+pub fn set_upper_edge(
+    current_top: &[f32],
+    above_bottom: Option<&[f32]>,
+    bulk_offsets: &[Vec<i16>],
+    tilerow: usize,
+    tilecol: usize,
+) -> Result<Vec<i16>, TileTraceError> {
+    if tilerow == 0 || above_bottom.is_none() {
+        return Ok(vec![0; current_top.len()]);
+    }
+    let above_bottom = above_bottom.expect("checked above");
+    if above_bottom.len() != current_top.len() {
+        return Err(TileTraceError::InvalidNeighborEdgeLength {
+            expected: current_top.len(),
+            got: above_bottom.len(),
+        });
+    }
+    let ntilerow = bulk_offsets.len();
+    let ntilecol = bulk_offsets.first().map_or(0, Vec::len);
+    validate_bulk_offsets(bulk_offsets, ntilerow, ntilecol)?;
+    let rel =
+        i64::from(bulk_offsets[tilerow - 1][tilecol]) - i64::from(bulk_offsets[tilerow][tilecol]);
+
+    let mut flows = Vec::with_capacity(current_top.len());
+    for col in 0..current_top.len() {
+        let dphi = f64::from(above_bottom[col] - current_top[col]) / TWO_PI;
+        flows.push(to_i16_flow(l_round(dphi) - rel)?);
+    }
+    Ok(flows)
+}
+
+/// Build left boundary flows for one tile.
+///
+/// This is the typed Rust equivalent of C `SetLeftEdge()`.
+pub fn set_left_edge(
+    current_left: &[f32],
+    last_right: Option<&[f32]>,
+    bulk_offsets: &[Vec<i16>],
+    tilerow: usize,
+    tilecol: usize,
+) -> Result<Vec<i16>, TileTraceError> {
+    if tilecol == 0 || last_right.is_none() {
+        return Ok(vec![0; current_left.len()]);
+    }
+    let last_right = last_right.expect("checked above");
+    if last_right.len() != current_left.len() {
+        return Err(TileTraceError::InvalidNeighborEdgeLength {
+            expected: current_left.len(),
+            got: last_right.len(),
+        });
+    }
+    let ntilerow = bulk_offsets.len();
+    let ntilecol = bulk_offsets.first().map_or(0, Vec::len);
+    validate_bulk_offsets(bulk_offsets, ntilerow, ntilecol)?;
+    let rel =
+        i64::from(bulk_offsets[tilerow][tilecol]) - i64::from(bulk_offsets[tilerow][tilecol - 1]);
+
+    let mut flows = Vec::with_capacity(current_left.len());
+    for row in 0..current_left.len() {
+        let dphi = f64::from(current_left[row] - last_right[row]) / TWO_PI;
+        flows.push(to_i16_flow(l_round(dphi) - rel)?);
+    }
+    Ok(flows)
+}
+
+/// Build right boundary flows for one tile and update row bulk offsets.
+///
+/// This is the typed Rust equivalent of C `SetRightEdge()`.
+pub fn set_right_edge(
+    current_right: &[f32],
+    next_left: Option<&[f32]>,
+    bulk_offsets: &mut [Vec<i16>],
+    tilerow: usize,
+    tilecol: usize,
+) -> Result<Vec<i16>, TileTraceError> {
+    let ntilerow = bulk_offsets.len();
+    let ntilecol = bulk_offsets.first().map_or(0, Vec::len);
+    validate_bulk_offsets(bulk_offsets, ntilerow, ntilecol)?;
+
+    if tilecol == ntilecol.saturating_sub(1) || next_left.is_none() {
+        return Ok(vec![0; current_right.len()]);
+    }
+    let next_left = next_left.expect("checked above");
+    if next_left.len() != current_right.len() {
+        return Err(TileTraceError::InvalidNeighborEdgeLength {
+            expected: current_right.len(),
+            got: next_left.len(),
+        });
+    }
+
+    let mut raw = Vec::with_capacity(current_right.len());
+    for row in 0..current_right.len() {
+        let dphi = f64::from(next_left[row] - current_right[row]) / TWO_PI;
+        raw.push(l_round(dphi));
+    }
+
+    let rel = if tilerow == 0 {
+        let mode = flow_mode(&raw);
+        let new_offset = i64::from(bulk_offsets[tilerow][tilecol]) + mode;
+        bulk_offsets[tilerow][tilecol + 1] = to_i16_flow(new_offset)?;
+        mode
+    } else {
+        i64::from(bulk_offsets[tilerow][tilecol + 1]) - i64::from(bulk_offsets[tilerow][tilecol])
+    };
+
+    raw.into_iter().map(|v| to_i16_flow(v - rel)).collect()
+}
+
+/// Build bottom boundary flows for one tile and update column bulk offsets.
+///
+/// This is the typed Rust equivalent of C `SetLowerEdge()`.
+pub fn set_lower_edge(
+    current_bottom: &[f32],
+    below_top: Option<&[f32]>,
+    bulk_offsets: &mut [Vec<i16>],
+    tilerow: usize,
+    tilecol: usize,
+) -> Result<Vec<i16>, TileTraceError> {
+    let ntilerow = bulk_offsets.len();
+    let ntilecol = bulk_offsets.first().map_or(0, Vec::len);
+    validate_bulk_offsets(bulk_offsets, ntilerow, ntilecol)?;
+
+    if tilerow == ntilerow.saturating_sub(1) || below_top.is_none() {
+        return Ok(vec![0; current_bottom.len()]);
+    }
+    let below_top = below_top.expect("checked above");
+    if below_top.len() != current_bottom.len() {
+        return Err(TileTraceError::InvalidNeighborEdgeLength {
+            expected: current_bottom.len(),
+            got: below_top.len(),
+        });
+    }
+
+    let mut raw = Vec::with_capacity(current_bottom.len());
+    for col in 0..current_bottom.len() {
+        let dphi = f64::from(current_bottom[col] - below_top[col]) / TWO_PI;
+        raw.push(l_round(dphi));
+    }
+
+    let rel = if tilecol == 0 {
+        let mode = flow_mode(&raw);
+        let new_offset = i64::from(bulk_offsets[tilerow][tilecol]) - mode;
+        bulk_offsets[tilerow + 1][tilecol] = to_i16_flow(new_offset)?;
+        mode
+    } else {
+        i64::from(bulk_offsets[tilerow][tilecol]) - i64::from(bulk_offsets[tilerow + 1][tilecol])
+    };
+
+    raw.into_iter().map(|v| to_i16_flow(v - rel)).collect()
+}
+
+fn can_step_right(
+    from: TileNodeCoord,
+    inputs: &FindNumPathsOutInputs<'_>,
+) -> Result<bool, FindNumPathsOutError> {
+    if from.col == inputs.nncol - 1 {
+        return Ok(false);
+    }
+    if from.row == 0 || from.row == inputs.nnrow - 1 {
+        return Ok(true);
+    }
+    let a = inputs.regions[from.row - 1][from.col];
+    let b = inputs.regions[from.row][from.col];
+    Ok(a != b)
+}
+
+fn can_step_down(
+    from: TileNodeCoord,
+    inputs: &FindNumPathsOutInputs<'_>,
+) -> Result<bool, FindNumPathsOutError> {
+    if from.row == inputs.nnrow - 1 {
+        return Ok(false);
+    }
+    if from.col == 0 || from.col == inputs.nncol - 1 {
+        return Ok(true);
+    }
+    let a = inputs.regions[from.row][from.col];
+    let b = inputs.regions[from.row][from.col - 1];
+    Ok(a != b)
+}
+
+fn can_step_left(
+    from: TileNodeCoord,
+    inputs: &FindNumPathsOutInputs<'_>,
+) -> Result<bool, FindNumPathsOutError> {
+    if from.col == 0 {
+        return Ok(false);
+    }
+    if from.row == 0 || from.row == inputs.nnrow - 1 {
+        return Ok(true);
+    }
+    let a = inputs.regions[from.row][from.col - 1];
+    let b = inputs.regions[from.row - 1][from.col - 1];
+    Ok(a != b)
+}
+
+fn can_step_up(
+    from: TileNodeCoord,
+    inputs: &FindNumPathsOutInputs<'_>,
+) -> Result<bool, FindNumPathsOutError> {
+    if from.row == 0 {
+        return Ok(false);
+    }
+    if from.col == 0 || from.col == inputs.nncol - 1 {
+        return Ok(true);
+    }
+    let a = inputs.regions[from.row - 1][from.col - 1];
+    let b = inputs.regions[from.row - 1][from.col];
+    Ok(a != b)
+}
+
+fn inverse_direction(direction: ArcDirection) -> ArcDirection {
+    match direction {
+        ArcDirection::Right => ArcDirection::Left,
+        ArcDirection::Down => ArcDirection::Up,
+        ArcDirection::Left => ArcDirection::Right,
+        ArcDirection::Up => ArcDirection::Down,
+    }
+}
+
+/// Scan neighboring primary nodes and update DFS frontier state.
+///
+/// This is the typed Rust equivalent of C `RegionTraceCheckNeighbors()`.
+pub fn region_trace_check_neighbors(
+    from: TileNodeCoord,
+    workspace: &mut RegionTraceWorkspace,
+    inputs: &FindNumPathsOutInputs<'_>,
+) -> Result<Vec<RegionCrossing>, FindNumPathsOutError> {
+    let mut crossings = Vec::new();
+    let pred = workspace.nodes[from.row][from.col].pred;
+
+    let mut consider = |to: TileNodeCoord, direction: ArcDirection| {
+        if pred == Some(to) {
+            return;
+        }
+        workspace.nodes[to.row][to.col].pred = Some(from);
+        match workspace.nodes[to.row][to.col].group {
+            PrimaryTraceGroup::NotInBucket => {
+                workspace.nodes[to.row][to.col].group = PrimaryTraceGroup::InBucket;
+                workspace.stack.push(to);
+            }
+            PrimaryTraceGroup::OnTree => {
+                crossings.push(RegionCrossing {
+                    head: to,
+                    tail: from,
+                    fromdir: inverse_direction(direction),
+                });
+            }
+            PrimaryTraceGroup::InBucket => {}
+        }
+    };
+
+    if can_step_right(from, inputs)? {
+        consider(
+            TileNodeCoord {
+                row: from.row,
+                col: from.col + 1,
+            },
+            ArcDirection::Right,
+        );
+    }
+    if can_step_down(from, inputs)? {
+        consider(
+            TileNodeCoord {
+                row: from.row + 1,
+                col: from.col,
+            },
+            ArcDirection::Down,
+        );
+    }
+    if can_step_left(from, inputs)? {
+        consider(
+            TileNodeCoord {
+                row: from.row,
+                col: from.col - 1,
+            },
+            ArcDirection::Left,
+        );
+    }
+    if can_step_up(from, inputs)? {
+        consider(
+            TileNodeCoord {
+                row: from.row - 1,
+                col: from.col,
+            },
+            ArcDirection::Up,
+        );
+    }
+
+    Ok(crossings)
+}
+
+fn map_coord_to_secondary_key(
+    coord: TileNodeCoord,
+    tilerow: usize,
+    tilecol: usize,
+    ntilecol: usize,
+) -> SecondaryNodeKey {
+    let tilenum = tilerow * ntilecol + tilecol;
+    if coord.row == 0 && tilerow != 0 {
+        SecondaryNodeKey {
+            tile: tilenum - ntilecol,
+            primary_row: 0,
+            primary_col: coord.col as i64,
+        }
+    } else if coord.col == 0 && tilecol != 0 {
+        SecondaryNodeKey {
+            tile: tilenum - 1,
+            primary_row: coord.row as i64,
+            primary_col: 0,
+        }
+    } else {
+        SecondaryNodeKey {
+            tile: tilenum,
+            primary_row: coord.row as i64,
+            primary_col: coord.col as i64,
+        }
+    }
+}
+
+fn direction_from_head_to_tail(
+    head: TileNodeCoord,
+    tail: TileNodeCoord,
+) -> Result<ArcDirection, TileTraceError> {
+    if tail.row == head.row && tail.col == head.col + 1 {
+        Ok(ArcDirection::Right)
+    } else if tail.row == head.row + 1 && tail.col == head.col {
+        Ok(ArcDirection::Down)
+    } else if tail.row == head.row && tail.col + 1 == head.col {
+        Ok(ArcDirection::Left)
+    } else if tail.row + 1 == head.row && tail.col == head.col {
+        Ok(ArcDirection::Up)
+    } else {
+        Err(TileTraceError::InvalidPrimaryCoord)
+    }
+}
+
+fn unit_cost_profile(flowmax: usize) -> SecondaryArcCostProfile {
+    SecondaryArcCostProfile {
+        arroffset: 0,
+        incremental_costs: vec![0; 2 * flowmax],
+        variance_sum_tag: i64::from(avg_sig_sq(LARGE_SHORT, LARGE_SHORT)),
+        arc_len: 1,
+    }
+}
+
+/// Trace region boundaries and construct a secondary graph skeleton.
+///
+/// This is the typed Rust equivalent of C `TraceRegions()`.
+pub fn trace_regions(params: TraceRegionsParams<'_>) -> Result<TraceRegionsResult, TileTraceError> {
+    if params.flowmax == 0 || params.inputs.nnrow == 0 || params.inputs.nncol == 0 {
+        return Err(TileTraceError::InvalidTileGrid);
+    }
+
+    let mut result = TraceRegionsResult::default();
+    let mut workspace = RegionTraceWorkspace::new(params.inputs.nnrow, params.inputs.nncol);
+    workspace.nodes[0][0].group = PrimaryTraceGroup::InBucket;
+    workspace.stack.push(TileNodeCoord { row: 0, col: 0 });
+
+    let tilenum = params.inputs.tilerow * params.inputs.ntilecol + params.inputs.tilecol;
+
+    while let Some(from) = workspace.stack.pop() {
+        workspace.nodes[from.row][from.col].group = PrimaryTraceGroup::OnTree;
+        let npaths = find_num_paths_out(from, &params.inputs)
+            .map_err(|_| TileTraceError::InvalidRegionShape)?;
+
+        if npaths > 2 {
+            result.fork_nodes += 1;
+            let head_key = map_coord_to_secondary_key(
+                from,
+                params.inputs.tilerow,
+                params.inputs.tilecol,
+                params.inputs.ntilecol,
+            );
+            result.graph.get_or_insert_node(head_key);
+            if let Some(tail) = workspace.nodes[from.row][from.col].pred {
+                let skip = (params.inputs.tilerow != 0 && from.row == 0 && tail.row == 0)
+                    || (params.inputs.tilecol != 0 && from.col == 0 && tail.col == 0);
+                if !skip {
+                    let tail_key = map_coord_to_secondary_key(
+                        tail,
+                        params.inputs.tilerow,
+                        params.inputs.tilecol,
+                        params.inputs.ntilecol,
+                    );
+                    let fromdir = direction_from_head_to_tail(from, tail)?;
+                    let trace = trace_secondary_arc(
+                        &mut result.graph,
+                        tilenum,
+                        head_key,
+                        tail_key,
+                        fromdir,
+                        unit_cost_profile(params.flowmax),
+                        false,
+                    );
+                    result.total_arc_len += trace.total_arc_len_delta;
+                }
+            }
+        }
+
+        let crossings = region_trace_check_neighbors(from, &mut workspace, &params.inputs)
+            .map_err(|_| TileTraceError::InvalidRegionShape)?;
+        for crossing in crossings {
+            let head_key = map_coord_to_secondary_key(
+                crossing.head,
+                params.inputs.tilerow,
+                params.inputs.tilecol,
+                params.inputs.ntilecol,
+            );
+            let tail_key = map_coord_to_secondary_key(
+                crossing.tail,
+                params.inputs.tilerow,
+                params.inputs.tilecol,
+                params.inputs.ntilecol,
+            );
+            let trace = trace_secondary_arc(
+                &mut result.graph,
+                tilenum,
+                head_key,
+                tail_key,
+                crossing.fromdir,
+                unit_cost_profile(params.flowmax),
+                false,
+            );
+            result.total_arc_len += trace.total_arc_len_delta;
+        }
+    }
+
+    Ok(result)
+}
+
+fn local_primary_coord(
+    key: SecondaryNodeKey,
+    tilenum: usize,
+    ntilecol: usize,
+) -> Result<(usize, usize), TileTraceError> {
+    if key.tile == tilenum {
+        return Ok((key.primary_row as usize, key.primary_col as usize));
+    }
+    if key.tile + ntilecol == tilenum {
+        return Ok((0, key.primary_col as usize));
+    }
+    if key.tile + 1 == tilenum {
+        return Ok((key.primary_row as usize, 0));
+    }
+    Ok((0, 0))
+}
+
+/// Parse secondary-graph flows back to primary tile-edge flow increments.
+///
+/// This is the typed Rust equivalent of C `ParseSecondaryFlows()`.
+pub fn parse_secondary_flows(
+    params: ParseSecondaryFlowsParams<'_>,
+) -> Result<ParsedTileFlows, TileTraceError> {
+    if params.arc_indices.len() != params.secondary_flows.len() {
+        return Err(TileTraceError::MismatchedArcFlowLen {
+            arcs: params.arc_indices.len(),
+            flows: params.secondary_flows.len(),
+        });
+    }
+    if params.regions.len() != params.nrow
+        || params.regions.iter().any(|row| row.len() != params.ncol)
+    {
+        return Err(TileTraceError::InvalidRegionShape);
+    }
+
+    let nnrow = params.nrow + 1;
+    let nncol = params.ncol + 1;
+    let mut row_flows = vec![vec![0i16; nncol]; nnrow];
+    let mut col_flows = vec![vec![0i16; nncol]; nnrow];
+    let sign = if params.flip_phase_sign { -1i64 } else { 1i64 };
+
+    for (k, &arc_idx) in params.arc_indices.iter().enumerate() {
+        let arc = params
+            .graph
+            .arcs
+            .get(arc_idx)
+            .ok_or(TileTraceError::InvalidArcIndex {
+                index: arc_idx,
+                len: params.graph.arcs.len(),
+            })?;
+
+        let nflow = sign * i64::from(params.secondary_flows[k]);
+        if nflow == 0 {
+            continue;
+        }
+
+        let from_key = params.graph.nodes[arc.from].key;
+        let to_key = params.graph.nodes[arc.to].key;
+        let (primary_from_row, primary_from_col) =
+            local_primary_coord(from_key, params.tilenum, params.ntilecol)?;
+        let (mut this_row, mut this_col) =
+            local_primary_coord(to_key, params.tilenum, params.ntilecol)?;
+
+        let (mut next_row, mut next_col): (isize, isize) = match arc.fromdir {
+            ArcDirection::Right => {
+                row_flows[this_row][this_col] =
+                    to_i16_flow(i64::from(row_flows[this_row][this_col]) - nflow)?;
+                (this_row as isize, this_col as isize + 1)
+            }
+            ArcDirection::Down => {
+                col_flows[this_row][this_col] =
+                    to_i16_flow(i64::from(col_flows[this_row][this_col]) - nflow)?;
+                (this_row as isize + 1, this_col as isize)
+            }
+            ArcDirection::Left => {
+                row_flows[this_row][this_col - 1] =
+                    to_i16_flow(i64::from(row_flows[this_row][this_col - 1]) + nflow)?;
+                (this_row as isize, this_col as isize - 1)
+            }
+            ArcDirection::Up => {
+                col_flows[this_row - 1][this_col] =
+                    to_i16_flow(i64::from(col_flows[this_row - 1][this_col]) + nflow)?;
+                (this_row as isize - 1, this_col as isize)
+            }
+        };
+
+        let mut steps = 0usize;
+        let max_steps = 4 * nnrow * nncol + 8;
+        while next_row != primary_from_row as isize || next_col != primary_from_col as isize {
+            if steps > max_steps {
+                return Err(TileTraceError::PathTraceDidNotConverge { arc_idx });
+            }
+            steps += 1;
+
+            let prev_row = this_row as isize;
+            let prev_col = this_col as isize;
+            this_row = next_row as usize;
+            this_col = next_col as usize;
+
+            if this_col != nncol - 1
+                && (this_row == 0
+                    || this_row == nnrow - 1
+                    || params.regions[this_row - 1][this_col] != params.regions[this_row][this_col])
+                && !(this_row as isize == prev_row && this_col as isize + 1 == prev_col)
+            {
+                row_flows[this_row][this_col] =
+                    to_i16_flow(i64::from(row_flows[this_row][this_col]) - nflow)?;
+                next_col += 1;
+            }
+
+            if this_row != nnrow - 1
+                && (this_col == 0
+                    || this_col == nncol - 1
+                    || params.regions[this_row][this_col] != params.regions[this_row][this_col - 1])
+                && !(this_row as isize + 1 == prev_row && this_col as isize == prev_col)
+            {
+                col_flows[this_row][this_col] =
+                    to_i16_flow(i64::from(col_flows[this_row][this_col]) - nflow)?;
+                next_row += 1;
+            }
+
+            if this_col != 0
+                && (this_row == 0
+                    || this_row == nnrow - 1
+                    || params.regions[this_row][this_col - 1]
+                        != params.regions[this_row - 1][this_col - 1])
+                && !(this_row as isize == prev_row && this_col as isize - 1 == prev_col)
+            {
+                row_flows[this_row][this_col - 1] =
+                    to_i16_flow(i64::from(row_flows[this_row][this_col - 1]) + nflow)?;
+                next_col -= 1;
+            }
+
+            if this_row != 0
+                && (this_col == 0
+                    || this_col == nncol - 1
+                    || params.regions[this_row - 1][this_col - 1]
+                        != params.regions[this_row - 1][this_col])
+                && !(this_row as isize - 1 == prev_row && this_col as isize == prev_col)
+            {
+                col_flows[this_row - 1][this_col] =
+                    to_i16_flow(i64::from(col_flows[this_row - 1][this_col]) + nflow)?;
+                next_row -= 1;
+            }
+        }
+    }
+
+    Ok(ParsedTileFlows {
+        row_flows,
+        col_flows,
+    })
+}
+
+/// Integrate tile-local unwrapped phase with tile offsets and stitched windows.
+///
+/// This is the typed Rust equivalent of C `IntegrateSecondaryFlows()`.
+pub fn integrate_secondary_flows(
+    params: IntegrateSecondaryFlowsParams<'_>,
+) -> Result<IntegratedSecondaryOutput, TileTraceError> {
+    validate_bulk_offsets(
+        params.bulk_offsets,
+        params.settings.ntilerow,
+        params.settings.ntilecol,
+    )?;
+    if params.tiles.len() != params.settings.ntilerow * params.settings.ntilecol {
+        return Err(TileTraceError::InvalidTileGrid);
+    }
+
+    let mut mag = vec![vec![0.0f32; params.linelen]; params.nlines];
+    let mut unw = vec![vec![0.0f32; params.linelen]; params.nlines];
+
+    let ni = (params.nlines + (params.settings.ntilerow - 1) * params.settings.row_overlap)
+        .div_ceil(params.settings.ntilerow);
+    let nj = (params.linelen + (params.settings.ntilecol - 1) * params.settings.col_overlap)
+        .div_ceil(params.settings.ntilecol);
+
+    for tilerow in 0..params.settings.ntilerow {
+        for tilecol in 0..params.settings.ntilecol {
+            let tilenum = tilerow * params.settings.ntilecol + tilecol;
+            let tile = &params.tiles[tilenum];
+            if tile.mag.is_empty()
+                || tile.unw_phase.is_empty()
+                || tile.mag.len() != tile.unw_phase.len()
+                || tile.mag[0].len() != tile.unw_phase[0].len()
+            {
+                return Err(TileTraceError::InvalidTileShape { tilerow, tilecol });
+            }
+
+            let _flows = parse_secondary_flows(ParseSecondaryFlowsParams {
+                tilenum,
+                nrow: tile.regions.len(),
+                ncol: tile.regions.first().map_or(0, Vec::len),
+                ntilerow: params.settings.ntilerow,
+                ntilecol: params.settings.ntilecol,
+                flip_phase_sign: params.flip_phase_sign,
+                regions: &tile.regions,
+                graph: params.graph,
+                arc_indices: &tile.arc_indices,
+                secondary_flows: &tile.secondary_flows,
+            })?;
+
+            let tile_first_row = tilerow * ni.saturating_sub(params.settings.row_overlap);
+            let tile_first_col = tilecol * nj.saturating_sub(params.settings.col_overlap);
+            let region = set_tile_read_params(
+                tile.mag.len(),
+                tile.mag[0].len(),
+                tilerow,
+                tilecol,
+                params.settings,
+            );
+
+            let base_cycles = if params.flip_phase_sign {
+                -f32::from(params.bulk_offsets[tilerow][tilecol])
+            } else {
+                f32::from(params.bulk_offsets[tilerow][tilecol])
+            };
+            let tile_offset = base_cycles * TWO_PI_F32;
+
+            for r in 0..region.rows {
+                for c in 0..region.cols {
+                    let src_r = region.first_row + r;
+                    let src_c = region.first_col + c;
+                    let out_r = tile_first_row + src_r;
+                    let out_c = tile_first_col + src_c;
+                    if out_r < params.nlines && out_c < params.linelen {
+                        mag[out_r][out_c] = tile.mag[src_r][src_c];
+                        unw[out_r][out_c] = tile.unw_phase[src_r][src_c] + tile_offset;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(IntegratedSecondaryOutput {
+        mag,
+        unw_phase: unw,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
