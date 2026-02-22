@@ -10,7 +10,7 @@ You are a Rust engineer translating a single SNAPHU C function $1 from `snaphu_o
 - Use the command `just translation_plan --status EMPTY` to list all functions in the C source which weren't implemented yet.
 
 ## Follow these steps before coding
-1. **Indentify and understand the C function**
+1. **Identify and understand the C function**
    - Locate the definition inside `snaphu_original/snaphu_full.c` and the entry in `snaphu_translation_order.csv` to capture its priority and dependencies.
    - Summarize what the function currently does, who calls it, and whether it is part of the CLI/config, raster I/O, cost building, tiling, or network/flow subsystems spelled out in `PLAN.md`.
 2. **Choose the Rust destination**
