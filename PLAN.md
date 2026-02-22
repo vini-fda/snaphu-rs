@@ -85,6 +85,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Phase-only alternating-line reader `ReadAltLineFilePhase` is implemented in `io::reader`, preserving the C phase-offset and row-stride semantics with typed `Raster<f32>` output.
    - ✅ Alternating-sample reader `ReadAltSampFile` now lives in `io::reader`, splitting interleaved `A/B` float samples into typed tile rasters with parity tests and strict size checks.
    - ✅ Complex-input reader `ReadComplexFile` now lives in `io::reader`, converting interleaved real/imag samples into magnitude plus wrapped phase rasters with C-compatible edge handling.
+   - ✅ Weight reader `ReadWeightsFile` now lives in `io::reader`, supporting uniform default weights and clipping negative on-disk weights to zero like the C implementation.
    - ✅ Packed arc readers `Read2DRowColFile`/`Read2DRowColFileRows` are available in `io::reader` as typed row/column extraction helpers, preserving block offsets and tile slicing rules from the C implementation.
    - ✅ Tree frontier helper `AddNewNode` now lives in `network::mod`, with explicit bucket-window semantics (`minind/maxind/curr`) and regression tests for reinsert, underflow, overflow, and predecessor-forced updates.
    - ✅ Flow/residue helpers (`CalcFlow`, `NodeResidue`) are now implemented in `data::ops` with row/column-layout parity tests.

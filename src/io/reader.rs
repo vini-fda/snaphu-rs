@@ -709,6 +709,11 @@ pub struct RowColTile<T> {
     pub col_arcs: Raster<T>,
 }
 
+/// Default scalar arc weight used when no explicit weight file is provided.
+///
+/// Mirrors C's `DEF_WEIGHT`.
+pub const DEFAULT_WEIGHT: i16 = 1;
+
 /// Read row and column arc arrays from a packed RowCol file.
 ///
 /// This is the idiomatic Rust equivalent of the C `Read2DRowColFile()`
@@ -914,6 +919,56 @@ pub fn read_2d_row_col_file_rows<T: NativeSample>(
     }
 
     Ok(Raster::new(window.ncol, window.nrow, row_data))
+}
+
+/// Read scalar arc weights from a RowCol file, or synthesize uniform weights.
+///
+/// This is the idiomatic Rust equivalent of C `ReadWeightsFile()`.
+///
+/// When `weightfile` is `None`, both arc blocks are filled with
+/// [`DEFAULT_WEIGHT`]. When a file is provided, any negative values are
+/// clipped to zero.
+pub fn read_weights_file(
+    weightfile: Option<&Path>,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+) -> io::Result<RowColTile<i16>> {
+    if window.nrow == 0 || window.ncol == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "tile window must be at least 1x1",
+        ));
+    }
+
+    let mut weights = if let Some(path) = weightfile {
+        read_2d_row_col_file::<i16>(path, line_len, nlines, window)?
+    } else {
+        let row_len = (window.nrow - 1).checked_mul(window.ncol).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "row weight size overflow")
+        })?;
+        let col_len = window.nrow.checked_mul(window.ncol - 1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "col weight size overflow")
+        })?;
+
+        RowColTile {
+            row_arcs: Raster::new(window.ncol, window.nrow - 1, vec![DEFAULT_WEIGHT; row_len]),
+            col_arcs: Raster::new(window.ncol - 1, window.nrow, vec![DEFAULT_WEIGHT; col_len]),
+        }
+    };
+
+    for value in &mut weights.row_arcs.data {
+        if *value < 0 {
+            *value = 0;
+        }
+    }
+    for value in &mut weights.col_arcs.data {
+        if *value < 0 {
+            *value = 0;
+        }
+    }
+
+    Ok(weights)
 }
 
 /// Split a file path into its parent directory and base filename.
@@ -1398,6 +1453,46 @@ mod tests {
         assert!(err.to_string().contains("row-arc block bounds"));
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_weights_file_clips_negative_values() {
+        let path = temp_file("snaphu_rs_read_weights_file");
+        let mut fp = File::create(&path).unwrap();
+        // nlines=3, line_len=3 => row block 2x3, col block 3x2
+        let row_block = [1i16, -2, 3, -4, 5, -6];
+        let col_block = [7i16, -8, -9, 10, 11, -12];
+        for v in row_block {
+            fp.write_all(&v.to_ne_bytes()).unwrap();
+        }
+        for v in col_block {
+            fp.write_all(&v.to_ne_bytes()).unwrap();
+        }
+        drop(fp);
+
+        let weights = read_weights_file(Some(&path), 3, 3, TileWindow::new(0, 0, 3, 3)).unwrap();
+        assert_eq!(weights.row_arcs.data, vec![1, 0, 3, 0, 5, 0]);
+        assert_eq!(weights.col_arcs.data, vec![7, 0, 0, 10, 11, 0]);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_weights_file_defaults_to_uniform_weights() {
+        let weights = read_weights_file(None, 9, 9, TileWindow::new(0, 0, 4, 3)).unwrap();
+        assert_eq!(weights.row_arcs.width, 3);
+        assert_eq!(weights.row_arcs.height, 3);
+        assert!(weights.row_arcs.data.iter().all(|&v| v == DEFAULT_WEIGHT));
+        assert_eq!(weights.col_arcs.width, 2);
+        assert_eq!(weights.col_arcs.height, 4);
+        assert!(weights.col_arcs.data.iter().all(|&v| v == DEFAULT_WEIGHT));
+    }
+
+    #[test]
+    fn read_weights_file_rejects_zero_sized_windows() {
+        let err = read_weights_file(None, 8, 8, TileWindow::new(0, 0, 0, 3)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("at least 1x1"));
     }
 
     #[test]

@@ -134,7 +134,7 @@ ReadIntensity,5,DONE
 ReadMagnitude,3,
 ReadNextRegion,3,
 ReadUnwrappedEstimateFile,3,
-ReadWeightsFile,4,
+ReadWeightsFile,4,DONE
 ReAlloc,6,NOT_PLANNED
 ReCalcCost,4,
 refine,6,NOT_PLANNED
