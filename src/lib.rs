@@ -242,10 +242,16 @@ options:
         Ok(()) => {}
     }
 
-    if params.ntilerow != 1 || params.ntilecol != 1 || params.onetilereopt || params.assemble_only {
+    if params.onetilereopt {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "native Rust CLI currently supports single-tile runs only",
+            "native Rust CLI does not support single-tile reoptimization (-S) yet",
+        ));
+    }
+    if params.assemble_only {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "native Rust CLI does not support --assemble mode yet",
         ));
     }
     if params.eval {
@@ -254,6 +260,8 @@ options:
             "native Rust CLI quantify-only mode is not implemented yet",
         ));
     }
+
+    let multi_tile = params.ntilerow != 1 || params.ntilecol != 1;
 
     let infile_path = Path::new(&infiles.infile);
     let infile_format = to_input_file_format(params.infile_format);
@@ -368,48 +376,88 @@ options:
 
     let mag_grid = to_grid_f32(&input.mag);
     let wrapped_grid = to_grid_f32(&input.wrapped_phase);
-    let initial_flows = input
-        .flows
-        .as_deref()
-        .map(|flows| flat_to_row_col_flows(flows, window.nrow, window.ncol))
-        .transpose()?;
 
-    let out = unwrap_tile(
-        UnwrapTileParams {
-            mag: &mag_grid,
-            wrapped_phase: &wrapped_grid,
-            power: power_grid.as_deref(),
-            correlation: corr_grid.as_deref(),
-            initial_flows,
-            cost_threshold: 0,
-            min_region_size: 1,
-            max_components: window.nrow.saturating_mul(window.ncol).max(1),
-        },
-        &params,
-    )
-    .map_err(|err| io::Error::other(format!("native unwrap failed: {err:?}")))?;
+    if multi_tile {
+        use crate::unwrapping::multitile::run_multi_tile;
 
-    let flat_flows = row_col_to_flat_flows(&out.flows, window.nrow, window.ncol)?;
-    let unwrapped_phase = integrate_phase(
-        &input.wrapped_phase.data,
-        &flat_flows,
-        window.nrow,
-        window.ncol,
-    );
-    let unwrapped = Raster::new(window.ncol, window.nrow, unwrapped_phase);
+        let integrated = run_multi_tile(
+            &mag_grid,
+            &wrapped_grid,
+            power_grid.as_deref(),
+            corr_grid.as_deref(),
+            window.nrow,
+            window.ncol,
+            &params,
+        )?;
 
-    let _written = write_output_file(
-        &input.mag,
-        &unwrapped,
-        Path::new(&outfiles.outfile),
-        to_output_file_format(params.outfile_format),
-    )?;
-
-    if params.verbose {
-        eprintln!(
-            "native Rust CLI wrote {}x{} output to {}",
-            window.nrow, window.ncol, outfiles.outfile
+        let out_mag = Raster::new(
+            window.ncol,
+            window.nrow,
+            integrated.mag.into_iter().flatten().collect(),
         );
+        let out_unw = Raster::new(
+            window.ncol,
+            window.nrow,
+            integrated.unw_phase.into_iter().flatten().collect(),
+        );
+
+        let _written = write_output_file(
+            &out_mag,
+            &out_unw,
+            Path::new(&outfiles.outfile),
+            to_output_file_format(params.outfile_format),
+        )?;
+
+        if params.verbose {
+            eprintln!(
+                "native Rust CLI wrote {}x{} multi-tile output to {}",
+                window.nrow, window.ncol, outfiles.outfile
+            );
+        }
+    } else {
+        let initial_flows = input
+            .flows
+            .as_deref()
+            .map(|flows| flat_to_row_col_flows(flows, window.nrow, window.ncol))
+            .transpose()?;
+
+        let out = unwrap_tile(
+            UnwrapTileParams {
+                mag: &mag_grid,
+                wrapped_phase: &wrapped_grid,
+                power: power_grid.as_deref(),
+                correlation: corr_grid.as_deref(),
+                initial_flows,
+                cost_threshold: 0,
+                min_region_size: 1,
+                max_components: window.nrow.saturating_mul(window.ncol).max(1),
+            },
+            &params,
+        )
+        .map_err(|err| io::Error::other(format!("native unwrap failed: {err:?}")))?;
+
+        let flat_flows = row_col_to_flat_flows(&out.flows, window.nrow, window.ncol)?;
+        let unwrapped_phase = integrate_phase(
+            &input.wrapped_phase.data,
+            &flat_flows,
+            window.nrow,
+            window.ncol,
+        );
+        let unwrapped = Raster::new(window.ncol, window.nrow, unwrapped_phase);
+
+        let _written = write_output_file(
+            &input.mag,
+            &unwrapped,
+            Path::new(&outfiles.outfile),
+            to_output_file_format(params.outfile_format),
+        )?;
+
+        if params.verbose {
+            eprintln!(
+                "native Rust CLI wrote {}x{} output to {}",
+                window.nrow, window.ncol, outfiles.outfile
+            );
+        }
     }
 
     Ok(())
