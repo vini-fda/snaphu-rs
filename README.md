@@ -10,9 +10,11 @@ using safe and idiomatic Rust idioms, with proper documentation, and an easy-to-
 
 The emphasis is first on **correctness**, then performance. So tests comparing both implementations should be implemented soon.
 
-## Generating synthetic interferograms
+## Generating synthetic wrapped interferograms
 
-The repository ships with a helper example that creates a synthetic interferogram, writes it to disk, and (optionally) runs the original `snaphu` binary so we can capture golden outputs for the Rust port.
+The repository ships with a helper example that creates a synthetic wrapped interferogram and writes it to disk as a `*.bin` file. This can be used as input to a phase unwrapping algorithm.
+
+Optionally, it also runs the original `snaphu` binary so we can capture reference outputs for the Rust port.
 
 ```
 cargo run --example complex_writer -- \
