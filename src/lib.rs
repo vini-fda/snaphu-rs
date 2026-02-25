@@ -18,6 +18,7 @@ pub mod costs;
 pub mod data;
 pub mod io;
 pub mod network;
+pub mod phase_compare;
 pub mod unwrapping;
 
 /// Run the SNAPHU CLI.
