@@ -1696,7 +1696,7 @@ int DisplayElapsedTime(time_t tstart, double cputimestart);
 /* main program for snaphu */
 /***************************/
 
-int run_main(int argc, char **argv) {
+int main(int argc, char **argv) {
 
   /* variable declarations */
   infileT infiles[1];
