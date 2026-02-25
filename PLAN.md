@@ -117,6 +117,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
 6. **Entry points (Priority 0–1)** *(IN PROGRESS)*
    - ✅ High-level translated orchestration exists (`CalcCostLP*`, `CalcCostNonGrid`, CLI/config parsing, `Unwrap`, `UnwrapTile`).
    - ✅ `run_cli` now has a native Rust execution path (`--no-default-features`) that parses arguments, reads input rasters, runs single-tile unwrap, and writes output.
+   - ✅ CLI binary target (`src/bin/snaphu.rs`) added with `[[bin]]` in `Cargo.toml`; `cargo run --no-default-features -- -h` prints the full help text matching the C `snaphu -h` output.
    - ⏳ Full CLI parity is still pending (legacy remains default, and native path currently scopes to single-tile/non-quantify workflows).
 
 While translating each CSV-priority batch, update the spreadsheet (or a markdown checklist) with statuses so we know which functions remain.

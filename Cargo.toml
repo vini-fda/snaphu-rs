@@ -22,6 +22,10 @@ libc = "0.2"
 log = "0.4.29"
 cost_scaling_rs = { package = "cost-scaling-rs", path = "../cost_scaling_rs" }
 
+[[bin]]
+name = "snaphu"
+path = "src/bin/snaphu.rs"
+
 [dev-dependencies]
 clap = { version = "4.5.20", features = ["derive"] }
 image = "0.25.9"

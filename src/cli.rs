@@ -39,6 +39,8 @@ pub enum ProcessArgsError {
     InvalidValue { option: String, value: String },
     NotEnoughPositionalArgs,
     MultipleInputFiles { first: String, second: String },
+    HelpRequested,
+    CopyrightRequested,
 }
 
 fn parse_usize_arg(option: &str, value: &str) -> Result<usize, ProcessArgsError> {
@@ -85,7 +87,7 @@ pub fn process_args(
         let arg = &raw_args[i];
         if arg.starts_with("--") {
             match arg.as_str() {
-                "--help" => return Err(ProcessArgsError::UnknownOption("--help".to_string())),
+                "--help" => return Err(ProcessArgsError::HelpRequested),
                 "--costinfile" => infiles.costinfile = next_arg(raw_args, &mut i, arg)?,
                 "--costoutfile" => outfiles.costoutfile = next_arg(raw_args, &mut i, arg)?,
                 "--debug" | "--dumpall" => params.dump_all = true,
@@ -118,9 +120,7 @@ pub fn process_args(
                 }
                 "--tiledir" => params.tiledir = next_arg(raw_args, &mut i, arg)?,
                 "--assemble" => params.assemble_only = true,
-                "--copyright" | "--info" => {
-                    return Err(ProcessArgsError::UnknownOption(arg.clone()));
-                }
+                "--copyright" | "--info" => return Err(ProcessArgsError::CopyrightRequested),
                 _ => return Err(ProcessArgsError::UnknownOption(arg.clone())),
             }
             i += 1;
@@ -135,7 +135,7 @@ pub fn process_args(
                 let option_name = format!("-{opt}");
                 let is_last = j + 1 == chars.len();
                 match opt {
-                    'h' => return Err(ProcessArgsError::UnknownOption(option_name)),
+                    'h' => return Err(ProcessArgsError::HelpRequested),
                     'u' => params.unwrapped = true,
                     't' => params.cost_mode = CostMode::Topo,
                     'd' => params.cost_mode = CostMode::Defo,

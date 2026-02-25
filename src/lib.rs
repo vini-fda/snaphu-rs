@@ -73,10 +73,49 @@ where
     use std::io;
     use std::path::{Path, PathBuf};
 
-    fn usage() -> &'static str {
-        "usage: snaphu [options] infile linelen\n\
-         native Rust path currently supports single-tile runs"
-    }
+    const FULL_HELP: &str = "\
+snaphu v2.0.7
+usage:  snaphu [options] infile linelength [options]
+options:
+  -t              use topography mode costs (default)
+  -d              use deformation mode costs
+  -s              use smooth-solution mode costs
+  -C <confstr>    parse argument string as config line as from conf file
+  -f <filename>   read configuration parameters from file
+  -o <filename>   write output to file
+  -a <filename>   read amplitude data from file
+  -A <filename>   read power data from file
+  -m <filename>   read interferogram magnitude data from file
+  -M <filename>   read byte mask data from file
+  -c <filename>   read correlation data from file
+  -e <filename>   read coarse unwrapped-phase estimate from file
+  -w <filename>   read scalar weights from file
+  -b <decimal>    perpendicular baseline (meters, topo mode only)
+  -p <decimal>    Lp-norm parameter p
+  -i              do initialization and exit
+  -n              do not use statistical costs (with -p or -i)
+  -u              infile is already unwrapped; initialization not needed
+  -q              quantify cost of unwrapped input file then exit
+  -g <filename>   grow connected components mask and write to file
+  -G <filename>   grow connected components mask for unwrapped input
+  -S              single-tile reoptimization after multi-tile init
+  -k              keep temporary tile outputs
+  -l <filename>   log runtime parameters to file
+  -v              give verbose output
+  --mst           use MST algorithm for initialization (default)
+  --mcf           use MCF algorithm for initialization
+  --aa <filename1> <filename2>    read amplitude from next two files
+  --AA <filename1> <filename2>    read power from next two files
+  --costinfile <filename>         read statistical costs from file
+  --costoutfile <filename>        write statistical costs to file
+  --tile <nrow> <ncol> <rowovrlp> <colovrlp>  unwrap as nrow x ncol tiles
+  --nproc <integer>               number of processors used in tile mode
+  --tiledir <dirname>             use specified directory for tiles
+  --assemble                      assemble unwrapped tiles in tiledir
+  --piece <firstrow> <firstcol> <nrow> <ncol>  unwrap subset of image
+  --debug, --dumpall              dump all intermediate data arrays
+  --copyright, --info             print copyright and bug report info
+  -h, --help                      print this help text";
 
     fn to_grid_f32(r: &Raster<f32>) -> Vec<Vec<f32>> {
         r.data
@@ -143,19 +182,7 @@ where
         .collect::<Vec<_>>();
 
     if raw_args.len() <= 1 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, usage()));
-    }
-
-    if raw_args.iter().any(|arg| arg == "-h" || arg == "--help") {
-        println!("{}", usage());
-        return Ok(());
-    }
-    if raw_args
-        .iter()
-        .any(|arg| arg == "--copyright" || arg == "--info")
-    {
-        println!("snaphu-rs native Rust path (work in progress)");
-        return Ok(());
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, FULL_HELP));
     }
 
     let mut infiles = InputFiles::default();
@@ -163,22 +190,32 @@ where
     let mut linelen = 0usize;
     let mut params = crate::config::RunConfig::default();
 
-    process_args(
+    match process_args(
         &raw_args,
         &mut infiles,
         &mut outfiles,
         &mut linelen,
         &mut params,
-    )
-    .map_err(|err| match err {
-        ProcessArgsError::NoArguments | ProcessArgsError::NotEnoughPositionalArgs => {
-            io::Error::new(io::ErrorKind::InvalidInput, usage())
+    ) {
+        Err(ProcessArgsError::HelpRequested) => {
+            println!("{FULL_HELP}");
+            return Ok(());
         }
-        other => io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("argument error: {other:?}"),
-        ),
-    })?;
+        Err(ProcessArgsError::CopyrightRequested) => {
+            println!("snaphu-rs native Rust path (work in progress)");
+            return Ok(());
+        }
+        Err(ProcessArgsError::NoArguments | ProcessArgsError::NotEnoughPositionalArgs) => {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, FULL_HELP));
+        }
+        Err(other) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("argument error: {other:?}"),
+            ));
+        }
+        Ok(()) => {}
+    }
 
     if params.ntilerow != 1 || params.ntilecol != 1 || params.onetilereopt || params.assemble_only {
         return Err(io::Error::new(
