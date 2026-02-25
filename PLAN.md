@@ -119,6 +119,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ `run_cli` now has a native Rust execution path (`--no-default-features`) that parses arguments, reads input rasters, runs single-tile unwrap, and writes output.
    - ✅ CLI binary target (`src/bin/snaphu.rs`) added with `[[bin]]` in `Cargo.toml`; `cargo run --no-default-features -- -h` prints the full help text matching the C `snaphu -h` output.
    - ✅ `-f` and `-C` flags now read config files and inline config strings via `apply_config_entries()`. File format fields (`INFILEFORMAT`, `OUTFILEFORMAT`, `CORRFILEFORMAT`, etc.) are tracked in `RunConfig` and used by the native execution path instead of hardcoded values.
+   - ✅ Added a dedicated performance-first multi-tile execution roadmap in `MULTI_TILE.md` (threaded scheduling, deterministic assembly, and future memory/disk tile-store strategy).
    - ⏳ Full CLI parity is still pending (legacy remains default, and native path currently scopes to single-tile/non-quantify workflows).
 
 While translating each CSV-priority batch, update the spreadsheet (or a markdown checklist) with statuses so we know which functions remain.
