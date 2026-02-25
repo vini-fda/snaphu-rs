@@ -25,7 +25,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 /// Maximum texture dimension supported by most GPUs (D3D11, Metal, WebGPU).
-/// Rerun maps tensors to GPU textures, so we downsample to fit within this
+/// Rerun maps tensors to GPU textures, so we crop to fit within this
 /// limit to avoid "texture larger than max" errors.
 const MAX_TEXTURE_DIM: usize = 16384;
 
