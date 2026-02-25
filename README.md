@@ -18,7 +18,7 @@ The repository ships with a helper example that creates a synthetic interferogra
 cargo run --example complex_writer -- \
     --out-dir target/examples/complex_writer \
     --snaphu-bin /path/to/snaphu \
-    --rerun --write_png
+    --rerun --write-png
 ```
 
 - `--snaphu-bin` defaults to `snaphu` on your `$PATH`; pass `--skip-snaphu` to generate data without invoking the C binary.
