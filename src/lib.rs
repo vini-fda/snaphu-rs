@@ -238,7 +238,7 @@ options:
         Err(other) => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("argument error: {other:?}"),
+                format!("argument error: {other}"),
             ));
         }
         Ok(()) => {}
@@ -261,6 +261,11 @@ options:
             io::ErrorKind::Unsupported,
             "native Rust CLI quantify-only mode is not implemented yet",
         ));
+    }
+    if !outfiles.logfile.is_empty() {
+        log::warn!(
+            "LOGFILE is ignored in native Rust path; use RUST_LOG/env_logger for runtime logging"
+        );
     }
 
     let multi_tile = params.ntilerow != 1 || params.ntilecol != 1;
@@ -422,9 +427,11 @@ options:
         )?;
 
         if params.verbose {
-            eprintln!(
+            log::info!(
                 "native Rust CLI wrote {}x{} multi-tile output to {}",
-                window.nrow, window.ncol, outfiles.outfile
+                window.nrow,
+                window.ncol,
+                outfiles.outfile
             );
         }
     } else {
@@ -466,9 +473,11 @@ options:
         )?;
 
         if params.verbose {
-            eprintln!(
+            log::info!(
                 "native Rust CLI wrote {}x{} output to {}",
-                window.nrow, window.ncol, outfiles.outfile
+                window.nrow,
+                window.ncol,
+                outfiles.outfile
             );
         }
     }

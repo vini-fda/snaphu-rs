@@ -218,9 +218,15 @@ pub fn setup_tile(
                 "{TMP_TILE_ROOT}{TMP_TILE_COST_SUFFIX}{tilerow}_{tilecol}.{tile_ncol}"
             ))),
         },
-        logfile: outfiles.logfile.as_deref().map(map_named).transpose()?,
+        // Native Rust path uses the `log` facade for runtime logging instead
+        // of per-tile logfile fanout.
+        logfile: None,
         outfile_format: OutputFileFormat::AltLineData,
     };
+
+    if outfiles.logfile.is_some() {
+        log::debug!("ignoring per-tile logfile path during tile setup");
+    }
 
     Ok(TileSetupResult {
         tile_region: TileRegion::new(first_row, first_col, tile_nrow, tile_ncol),

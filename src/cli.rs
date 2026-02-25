@@ -39,11 +39,51 @@ pub enum ProcessArgsError {
     NoArguments,
     UnknownOption(String),
     MissingValue(String),
-    InvalidValue { option: String, value: String },
+    InvalidValue {
+        option: String,
+        value: String,
+    },
+    ConfigReadFailed {
+        option: String,
+        path: String,
+        error: String,
+    },
     NotEnoughPositionalArgs,
-    MultipleInputFiles { first: String, second: String },
+    MultipleInputFiles {
+        first: String,
+        second: String,
+    },
     HelpRequested,
     CopyrightRequested,
+}
+
+impl std::fmt::Display for ProcessArgsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProcessArgsError::NoArguments => write!(f, "no arguments provided"),
+            ProcessArgsError::UnknownOption(opt) => write!(f, "unknown option: {opt}"),
+            ProcessArgsError::MissingValue(opt) => write!(f, "missing value for option: {opt}"),
+            ProcessArgsError::InvalidValue { option, value } => {
+                write!(f, "invalid value for {option}: {value}")
+            }
+            ProcessArgsError::ConfigReadFailed {
+                option,
+                path,
+                error,
+            } => write!(
+                f,
+                "failed to read config file for {option} ('{path}'): {error}"
+            ),
+            ProcessArgsError::NotEnoughPositionalArgs => {
+                write!(f, "missing required positional arguments")
+            }
+            ProcessArgsError::MultipleInputFiles { first, second } => {
+                write!(f, "multiple input files provided: '{first}' and '{second}'")
+            }
+            ProcessArgsError::HelpRequested => write!(f, "help requested"),
+            ProcessArgsError::CopyrightRequested => write!(f, "copyright requested"),
+        }
+    }
 }
 
 fn parse_usize_arg(option: &str, value: &str) -> Result<usize, ProcessArgsError> {
@@ -263,10 +303,11 @@ pub fn process_args(
                         }
                         let conf_path = next_arg(raw_args, &mut i, &option_name)?;
                         let entries =
-                            read_config_file(std::path::Path::new(&conf_path)).map_err(|_| {
-                                ProcessArgsError::InvalidValue {
+                            read_config_file(std::path::Path::new(&conf_path)).map_err(|err| {
+                                ProcessArgsError::ConfigReadFailed {
                                     option: option_name,
-                                    value: conf_path,
+                                    path: conf_path.clone(),
+                                    error: err.to_string(),
                                 }
                             })?;
                         apply_config_entries(&entries, infiles, outfiles, params);
@@ -599,6 +640,44 @@ mod tests {
         assert_eq!(params.ntilecol, 3);
         assert_eq!(params.rowovrlp, 10);
         assert_eq!(params.colovrlp, 11);
+    }
+
+    #[test]
+    fn process_args_reports_config_read_error_with_cause() {
+        let mut infiles = InputFiles::default();
+        let mut outfiles = OutputFiles::default();
+        let mut params = RunConfig::default();
+        let mut linelen = 0usize;
+        let args = vec![
+            "snaphu".to_string(),
+            "-f".to_string(),
+            "definitely_missing_config_file_12345.conf".to_string(),
+            "in.bin".to_string(),
+            "10".to_string(),
+        ];
+
+        let err = process_args(
+            &args,
+            &mut infiles,
+            &mut outfiles,
+            &mut linelen,
+            &mut params,
+        )
+        .unwrap_err();
+
+        match err {
+            ProcessArgsError::ConfigReadFailed {
+                option,
+                path,
+                error,
+                ..
+            } => {
+                assert_eq!(option, "-f");
+                assert_eq!(path, "definitely_missing_config_file_12345.conf");
+                assert!(!error.is_empty());
+            }
+            other => panic!("expected ConfigReadFailed, got {other:?}"),
+        }
     }
 
     #[test]

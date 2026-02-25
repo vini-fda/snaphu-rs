@@ -251,11 +251,14 @@ pub fn run_multi_tile(
     assert_eq!(plan.len(), ntiles);
 
     if params.verbose {
-        eprintln!(
+        log::info!(
             "multi-tile: {}x{} grid ({} tiles), {} threads",
-            ntilerow, ntilecol, ntiles, params.nthreads
+            ntilerow,
+            ntilecol,
+            ntiles,
+            params.nthreads
         );
-        eprintln!("multi-tile: plan build took {:?}", t_plan.elapsed());
+        log::info!("multi-tile: plan build took {:?}", t_plan.elapsed());
     }
 
     // 2. Parallel tile unwrap
@@ -455,7 +458,7 @@ pub fn run_multi_tile(
     }
 
     if params.verbose {
-        eprintln!(
+        log::info!(
             "multi-tile: all {} tiles processed ({} unwrapped, {} masked) in {:?}, computing bulk offsets",
             ntiles,
             active_tiles,
@@ -662,7 +665,7 @@ pub fn run_multi_tile(
     }
 
     if params.verbose {
-        eprintln!(
+        log::info!(
             "multi-tile: bulk offsets in {:?}, traced {} arcs (len sum {}), solved secondary in {:?}",
             t_offsets.elapsed(),
             graph.arcs.len(),
@@ -709,7 +712,7 @@ pub fn run_multi_tile(
     .map_err(|e| io::Error::other(format!("assembly failed: {e:?}")))?;
 
     if params.verbose {
-        eprintln!(
+        log::info!(
             "multi-tile: assembly complete in {:?}",
             t_assembly.elapsed()
         );
