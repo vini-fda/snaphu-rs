@@ -19,6 +19,7 @@ use crate::unwrapping::tiles::{
 use std::io;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 
 /// Entry in the precomputed tile plan grid.
 #[derive(Debug, Clone)]
@@ -36,7 +37,6 @@ pub struct TileResult {
     pub mag: Vec<Vec<f32>>,
     pub unw_phase: Vec<Vec<f32>>,
     pub regions: Vec<Vec<i16>>,
-    pub flows: Vec<Vec<i16>>,
 }
 
 /// Compute tile region geometry (equivalent to setup_tile's geometry logic).
@@ -109,17 +109,54 @@ pub fn build_tile_plan(
     Ok(plan)
 }
 
-/// Extract a rectangular window from a scene-level `Vec<Vec<f32>>` grid.
-fn extract_tile_window(scene: &[Vec<f32>], region: &TileRegion) -> Vec<Vec<f32>> {
-    let mut out = Vec::with_capacity(region.rows);
+/// Fill a rectangular tile window into a reusable destination grid buffer.
+fn fill_tile_window(
+    scene: &[Vec<f32>],
+    region: &TileRegion,
+    out: &mut Vec<Vec<f32>>,
+) -> io::Result<()> {
+    let row_end = region.first_row.saturating_add(region.rows);
+    if row_end > scene.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "tile rows [{}..{}) exceed scene height {}",
+                region.first_row,
+                row_end,
+                scene.len()
+            ),
+        ));
+    }
+
+    out.resize_with(region.rows, Vec::new);
     for r in 0..region.rows {
         let src_row = region.first_row + r;
         let row = &scene[src_row];
         let start = region.first_col;
-        let end = start + region.cols;
-        out.push(row[start..end].to_vec());
+        let end = start.saturating_add(region.cols);
+        if end > row.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "tile cols [{}..{}) exceed scene row width {} at row {}",
+                    start,
+                    end,
+                    row.len(),
+                    src_row
+                ),
+            ));
+        }
+        out[r].resize(region.cols, 0.0);
+        out[r].copy_from_slice(&row[start..end]);
     }
-    out
+    Ok(())
+}
+
+/// Extract a rectangular window from a scene-level `Vec<Vec<f32>>` grid.
+fn extract_tile_window(scene: &[Vec<f32>], region: &TileRegion) -> io::Result<Vec<Vec<f32>>> {
+    let mut out = Vec::new();
+    fill_tile_window(scene, region, &mut out)?;
+    Ok(out)
 }
 
 fn row_col_widths(nrow: usize, ncol: usize) -> Vec<usize> {
@@ -173,6 +210,7 @@ pub fn run_multi_tile(
     let ntiles = ntilerow * ntilecol;
 
     // 1. Build tile plan
+    let t_plan = Instant::now();
     let plan = build_tile_plan(nlines, linelen, params)?;
     assert_eq!(plan.len(), ntiles);
 
@@ -181,14 +219,22 @@ pub fn run_multi_tile(
             "multi-tile: {}x{} grid ({} tiles), {} threads",
             ntilerow, ntilecol, ntiles, params.nthreads
         );
+        eprintln!("multi-tile: plan build took {:?}", t_plan.elapsed());
     }
 
     // 2. Parallel tile unwrap
+    let t_unwrap = Instant::now();
     let worker_count = params.nthreads.min(ntiles).max(1);
     let results: Vec<OnceLock<Result<TileResult, String>>> =
         (0..ntiles).map(|_| OnceLock::new()).collect();
     let next_job = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
+    let tile_config = RunConfig {
+        // Force tiled behavior so region data is available for assembly.
+        ntilerow,
+        ntilecol,
+        ..params.clone()
+    };
 
     std::thread::scope(|s| {
         for _worker in 0..worker_count {
@@ -196,8 +242,13 @@ pub fn run_multi_tile(
             let results = &results;
             let next_job = &next_job;
             let failed = &failed;
+            let tile_config = &tile_config;
 
             s.spawn(move || {
+                let mut tile_wrapped: Vec<Vec<f32>> = Vec::new();
+                let mut tile_power: Option<Vec<Vec<f32>>> = power_grid.map(|_| Vec::new());
+                let mut tile_corr: Option<Vec<Vec<f32>>> = corr_grid.map(|_| Vec::new());
+
                 loop {
                     if failed.load(Ordering::Relaxed) {
                         break;
@@ -209,17 +260,45 @@ pub fn run_multi_tile(
                     let entry = &plan[idx];
                     let region = &entry.region;
 
-                    let tile_mag = extract_tile_window(mag_grid, region);
-                    let tile_wrapped = extract_tile_window(wrapped_grid, region);
-                    let tile_power = power_grid.map(|p| extract_tile_window(p, region));
-                    let tile_corr = corr_grid.map(|c| extract_tile_window(c, region));
-
-                    let tile_config = RunConfig {
-                        // Force region growth for tiles (needed for assembly)
-                        ntilerow,
-                        ntilecol,
-                        ..params.clone()
+                    let tile_mag = match extract_tile_window(mag_grid, region) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            failed.store(true, Ordering::Relaxed);
+                            let _ = results[idx].set(Err(format!(
+                                "tile ({},{}) magnitude extraction failed: {e}",
+                                entry.tilerow, entry.tilecol
+                            )));
+                            break;
+                        }
                     };
+                    if let Err(e) = fill_tile_window(wrapped_grid, region, &mut tile_wrapped) {
+                        failed.store(true, Ordering::Relaxed);
+                        let _ = results[idx].set(Err(format!(
+                            "tile ({},{}) phase extraction failed: {e}",
+                            entry.tilerow, entry.tilecol
+                        )));
+                        break;
+                    }
+                    if let (Some(scene), Some(buf)) = (power_grid, tile_power.as_mut())
+                        && let Err(e) = fill_tile_window(scene, region, buf)
+                    {
+                        failed.store(true, Ordering::Relaxed);
+                        let _ = results[idx].set(Err(format!(
+                            "tile ({},{}) power extraction failed: {e}",
+                            entry.tilerow, entry.tilecol
+                        )));
+                        break;
+                    }
+                    if let (Some(scene), Some(buf)) = (corr_grid, tile_corr.as_mut())
+                        && let Err(e) = fill_tile_window(scene, region, buf)
+                    {
+                        failed.store(true, Ordering::Relaxed);
+                        let _ = results[idx].set(Err(format!(
+                            "tile ({},{}) correlation extraction failed: {e}",
+                            entry.tilerow, entry.tilecol
+                        )));
+                        break;
+                    }
 
                     let result = unwrap_tile(
                         UnwrapTileParams {
@@ -232,7 +311,7 @@ pub fn run_multi_tile(
                             min_region_size: 1,
                             max_components: region.rows.saturating_mul(region.cols).max(1),
                         },
-                        &tile_config,
+                        tile_config,
                     );
 
                     let tile_result = match result {
@@ -270,8 +349,9 @@ pub fn run_multi_tile(
                                 region: *region,
                                 mag: tile_mag,
                                 unw_phase,
-                                regions: unwrap_result.regions.unwrap_or_default(),
-                                flows: unwrap_result.flows,
+                                regions: unwrap_result
+                                    .regions
+                                    .unwrap_or_else(|| vec![vec![0i16; region.cols]; region.rows]),
                             })
                         }
                         Err(e) => {
@@ -303,12 +383,14 @@ pub fn run_multi_tile(
 
     if params.verbose {
         eprintln!(
-            "multi-tile: all {} tiles unwrapped, computing bulk offsets",
-            ntiles
+            "multi-tile: all {} tiles unwrapped in {:?}, computing bulk offsets",
+            ntiles,
+            t_unwrap.elapsed()
         );
     }
 
     // 3. Bulk offset propagation
+    let t_offsets = Instant::now();
     let mut bulk_offsets = vec![vec![0i16; ntilecol]; ntilerow];
 
     for tilerow in 0..ntilerow {
@@ -332,11 +414,19 @@ pub fn run_multi_tile(
                     .map(|row| *row.first().unwrap_or(&0.0))
                     .collect();
 
-                // The tiles may have different row counts; use the shorter length
-                let min_rows = current_right.len().min(next_left.len());
+                if current_right.len() != next_left.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "right-edge seam length mismatch at ({tilerow},{tilecol}): {} vs {}",
+                            current_right.len(),
+                            next_left.len()
+                        ),
+                    ));
+                }
                 let _ = set_right_edge(
-                    &current_right[..min_rows],
-                    Some(&next_left[..min_rows]),
+                    &current_right,
+                    Some(&next_left),
                     &mut bulk_offsets,
                     tilerow,
                     tilecol,
@@ -354,10 +444,19 @@ pub fn run_multi_tile(
                 let current_bottom: Vec<f32> = tile.unw_phase.last().cloned().unwrap_or_default();
                 let below_top: Vec<f32> = below_tile.unw_phase.first().cloned().unwrap_or_default();
 
-                let min_cols = current_bottom.len().min(below_top.len());
+                if current_bottom.len() != below_top.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "lower-edge seam length mismatch at ({tilerow},{tilecol}): {} vs {}",
+                            current_bottom.len(),
+                            below_top.len()
+                        ),
+                    ));
+                }
                 let _ = set_lower_edge(
-                    &current_bottom[..min_cols],
-                    Some(&below_top[..min_cols]),
+                    &current_bottom,
+                    Some(&below_top),
                     &mut bulk_offsets,
                     tilerow,
                     tilecol,
@@ -370,10 +469,14 @@ pub fn run_multi_tile(
     }
 
     if params.verbose {
-        eprintln!("multi-tile: bulk offsets computed, assembling tiles");
+        eprintln!(
+            "multi-tile: bulk offsets computed in {:?}, assembling tiles",
+            t_offsets.elapsed()
+        );
     }
 
     // 4. Global assembly via integrate_secondary_flows
+    let t_assembly = Instant::now();
     let tiles: Vec<TileIntegrationInput> = tile_results
         .into_iter()
         .map(|t| TileIntegrationInput {
@@ -405,7 +508,10 @@ pub fn run_multi_tile(
     .map_err(|e| io::Error::other(format!("assembly failed: {e:?}")))?;
 
     if params.verbose {
-        eprintln!("multi-tile: assembly complete");
+        eprintln!(
+            "multi-tile: assembly complete in {:?}",
+            t_assembly.elapsed()
+        );
     }
 
     Ok(integrated)
@@ -455,5 +561,13 @@ mod tests {
         assert_eq!(result.unw_phase.len(), 4);
         assert_eq!(result.mag[0].len(), 4);
         assert_eq!(result.unw_phase[0].len(), 4);
+    }
+
+    #[test]
+    fn extract_tile_window_rejects_out_of_bounds_region() {
+        let scene = vec![vec![1.0f32; 2]; 2];
+        let region = TileRegion::new(1, 1, 2, 2);
+        let err = extract_tile_window(&scene, &region).expect_err("expected out-of-bounds error");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 }
