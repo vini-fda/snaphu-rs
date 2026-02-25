@@ -135,6 +135,8 @@ options:
   --costoutfile <filename>        write statistical costs to file
   --tile <nrow> <ncol> <rowovrlp> <colovrlp>  unwrap as nrow x ncol tiles
   --nproc <integer>               number of processors used in tile mode
+                                   (secondary config keys: SCNDRYARCFLOWMAX,
+                                    TILEEDGEWEIGHT, MAXCYCLEFRACTION)
   --tiledir <dirname>             use specified directory for tiles
   --assemble                      assemble unwrapped tiles in tiledir
   --piece <firstrow> <firstcol> <nrow> <ncol>  unwrap subset of image

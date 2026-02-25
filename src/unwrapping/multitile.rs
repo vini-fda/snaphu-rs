@@ -13,8 +13,10 @@ use crate::data::ops::integrate_phase;
 use crate::data::tile::TileRegion;
 use crate::unwrapping::flow::{UnwrapTileParams, unwrap_tile};
 use crate::unwrapping::tiles::{
-    IntegrateSecondaryFlowsParams, IntegratedSecondaryOutput, SecondaryGraph, TileIntegrationInput,
-    TileReadSettings, integrate_secondary_flows, set_lower_edge, set_right_edge,
+    FindNumPathsOutInputs, IntegrateSecondaryFlowsParams, IntegratedSecondaryOutput,
+    SecondaryGraph, TileIntegrationInput, TileReadSettings, TraceRegionsParams,
+    integrate_secondary_flows, normalize_secondary_arc_costs, set_lower_edge, set_right_edge,
+    solve_secondary_network, trace_regions,
 };
 use std::io;
 use std::sync::OnceLock;
@@ -36,6 +38,9 @@ pub struct TileResult {
     pub region: TileRegion,
     pub unw_phase: Vec<Vec<f32>>,
     pub regions: Vec<Vec<i16>>,
+    pub mst_costs: Vec<Vec<i16>>,
+    pub arc_indices: Vec<usize>,
+    pub secondary_flows: Vec<i16>,
 }
 
 /// Compute tile region geometry (equivalent to setup_tile's geometry logic).
@@ -192,6 +197,37 @@ fn to_grid_f32(data: &[f32], width: usize) -> Vec<Vec<f32>> {
     data.chunks_exact(width).map(|row| row.to_vec()).collect()
 }
 
+fn empty_mst_costs(nrow: usize, ncol: usize) -> Vec<Vec<i16>> {
+    if nrow == 0 || ncol == 0 {
+        return Vec::new();
+    }
+    (0..(2 * nrow - 1))
+        .map(|row| {
+            let width = if row < nrow - 1 { ncol } else { ncol - 1 };
+            vec![0i16; width]
+        })
+        .collect()
+}
+
+fn fit_region_grid(src: &[Vec<i16>], rows: usize, cols: usize) -> Vec<Vec<i16>> {
+    let mut out = vec![vec![0i16; cols]; rows];
+    let rmax = rows.min(src.len());
+    for r in 0..rmax {
+        let cmax = cols.min(src[r].len());
+        out[r][..cmax].copy_from_slice(&src[r][..cmax]);
+    }
+    out
+}
+
+fn fit_edge_row(src: Option<&[i16]>, cols: usize) -> Vec<i16> {
+    let mut out = vec![0i16; cols];
+    if let Some(src_row) = src {
+        let cmax = cols.min(src_row.len());
+        out[..cmax].copy_from_slice(&src_row[..cmax]);
+    }
+    out
+}
+
 /// Run the multi-tile unwrapping pipeline end-to-end.
 ///
 /// Returns the assembled `(mag, unw_phase)` grids at full scene dimensions.
@@ -285,6 +321,9 @@ pub fn run_multi_tile(
                                 region: *region,
                                 unw_phase,
                                 regions: vec![vec![0i16; region.cols]; region.rows],
+                                mst_costs: empty_mst_costs(region.rows, region.cols),
+                                arc_indices: Vec::new(),
+                                secondary_flows: Vec::new(),
                             });
                         let _ = results[idx].set(skip_result.map_err(|e| {
                             format!(
@@ -383,6 +422,9 @@ pub fn run_multi_tile(
                                 regions: unwrap_result
                                     .regions
                                     .unwrap_or_else(|| vec![vec![0i16; region.cols]; region.rows]),
+                                mst_costs: unwrap_result.cost_arrays.mst_costs,
+                                arc_indices: Vec::new(),
+                                secondary_flows: Vec::new(),
                             })
                         }
                         Err(e) => {
@@ -501,14 +543,135 @@ pub fn run_multi_tile(
         }
     }
 
+    // 4. Trace secondary arcs and solve secondary network
+    let t_secondary = Instant::now();
+    let mut graph = SecondaryGraph::default();
+    let mut traced_arc_len_sum = 0usize;
+    for tilerow in 0..ntilerow {
+        for tilecol in 0..ntilecol {
+            let tilenum = tilerow * ntilecol + tilecol;
+            if !do_tile[tilenum] {
+                continue;
+            }
+
+            let (nrow, ncol) = {
+                let tile = &tile_results[tilenum];
+                (
+                    tile.regions.len(),
+                    tile.regions.first().map_or(0, |row| row.len()),
+                )
+            };
+            if nrow == 0 || ncol == 0 {
+                continue;
+            }
+
+            let this_regions = fit_region_grid(&tile_results[tilenum].regions, nrow, ncol);
+            let nextregions = if tilecol + 1 < ntilecol {
+                let next_idx = tilerow * ntilecol + tilecol + 1;
+                fit_region_grid(&tile_results[next_idx].regions, nrow, ncol)
+            } else {
+                this_regions.clone()
+            };
+            let lastregions = if tilecol > 0 {
+                let prev_idx = tilerow * ntilecol + tilecol - 1;
+                fit_region_grid(&tile_results[prev_idx].regions, nrow, ncol)
+            } else {
+                this_regions.clone()
+            };
+            let regions_above = if tilerow > 0 {
+                let above_idx = (tilerow - 1) * ntilecol + tilecol;
+                fit_edge_row(
+                    tile_results[above_idx].regions.last().map(|r| r.as_slice()),
+                    ncol,
+                )
+            } else {
+                vec![0i16; ncol]
+            };
+            let regions_below = if tilerow + 1 < ntilerow {
+                let below_idx = (tilerow + 1) * ntilecol + tilecol;
+                fit_edge_row(
+                    tile_results[below_idx]
+                        .regions
+                        .first()
+                        .map(|r| r.as_slice()),
+                    ncol,
+                )
+            } else {
+                vec![0i16; ncol]
+            };
+            let prevncol = if tilecol > 0 {
+                lastregions.first().map_or(ncol, Vec::len).max(1)
+            } else {
+                ncol
+            };
+
+            let trace = trace_regions(
+                &mut graph,
+                TraceRegionsParams {
+                    flowmax: params.scndry_arc_flow_max,
+                    nshortcycle: params.nshortcycle,
+                    tileedgeweight: params.tile_edge_weight,
+                    mst_costs: &tile_results[tilenum].mst_costs,
+                    unw_phase: &tile_results[tilenum].unw_phase,
+                    inputs: FindNumPathsOutInputs {
+                        ntilerow,
+                        ntilecol,
+                        tilerow,
+                        tilecol,
+                        nnrow: nrow + 1,
+                        nncol: ncol + 1,
+                        prevncol,
+                        regions: &this_regions,
+                        nextregions: &nextregions,
+                        lastregions: &lastregions,
+                        regionsabove: &regions_above,
+                        regionsbelow: &regions_below,
+                    },
+                },
+            )
+            .map_err(|e| {
+                io::Error::other(format!(
+                    "trace_regions failed at tile ({tilerow},{tilecol}): {e:?}"
+                ))
+            })?;
+            traced_arc_len_sum = traced_arc_len_sum.saturating_add(trace.total_arc_len);
+            tile_results[tilenum].arc_indices = trace.arc_indices;
+        }
+    }
+
+    normalize_secondary_arc_costs(&mut graph);
+    let secondary_flows = solve_secondary_network(
+        &graph,
+        params.scndry_arc_flow_max,
+        params.max_cycle_fraction,
+        params.maxflow,
+        params.nshortcycle,
+    )
+    .map_err(|e| io::Error::other(format!("secondary network solve failed: {e:?}")))?;
+
+    for tile in &mut tile_results {
+        tile.secondary_flows = tile
+            .arc_indices
+            .iter()
+            .map(|&arc_idx| {
+                secondary_flows.get(arc_idx).copied().ok_or_else(|| {
+                    io::Error::other(format!("invalid secondary arc index {arc_idx}"))
+                })
+            })
+            .collect::<io::Result<Vec<i16>>>()?;
+    }
+
     if params.verbose {
         eprintln!(
-            "multi-tile: bulk offsets computed in {:?}, assembling tiles",
-            t_offsets.elapsed()
+            "multi-tile: bulk offsets in {:?}, traced {} arcs (len sum {}), solved secondary in {:?}",
+            t_offsets.elapsed(),
+            graph.arcs.len(),
+            traced_arc_len_sum,
+            t_secondary.elapsed()
         );
     }
 
-    // 4. Global assembly via integrate_secondary_flows
+    // 5. Global assembly via integrate_secondary_flows
     let t_assembly = Instant::now();
     let mut tiles: Vec<TileIntegrationInput> = Vec::with_capacity(tile_results.len());
     for t in tile_results {
@@ -522,12 +685,11 @@ pub fn run_multi_tile(
             mag,
             unw_phase: t.unw_phase,
             regions: t.regions,
-            arc_indices: vec![],
-            secondary_flows: vec![],
+            arc_indices: t.arc_indices,
+            secondary_flows: t.secondary_flows,
         });
     }
 
-    let graph = SecondaryGraph::default();
     let settings = TileReadSettings {
         row_overlap: params.rowovrlp,
         col_overlap: params.colovrlp,
@@ -631,5 +793,29 @@ mod tests {
             .expect("masked tiles should bypass unwrap and assemble");
 
         assert_eq!(result.unw_phase, wrapped);
+    }
+
+    #[test]
+    fn run_multi_tile_secondary_pipeline_handles_nontrivial_scene() {
+        let mag = vec![vec![1.0f32; 4]; 2];
+        let wrapped = vec![
+            vec![0.0f32, 0.8f32, -0.7f32, 0.6f32],
+            vec![0.2f32, 1.0f32, -0.5f32, 0.4f32],
+        ];
+
+        let params = RunConfig {
+            ntilerow: 1,
+            ntilecol: 2,
+            rowovrlp: 0,
+            colovrlp: 1,
+            unwrapped: true,
+            nthreads: 2,
+            ..RunConfig::default()
+        };
+
+        let result =
+            run_multi_tile(&mag, &wrapped, None, None, None, 2, 4, &params).expect("run succeeds");
+        assert_eq!(result.unw_phase.len(), 2);
+        assert_eq!(result.unw_phase[0].len(), 4);
     }
 }

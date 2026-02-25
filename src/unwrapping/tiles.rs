@@ -11,7 +11,7 @@ use crate::data::ops::{avg_sig_sq, l_round};
 use crate::data::tile::TileRegion;
 use crate::io::reader::parse_filename;
 use crate::io::writer::OutputFileFormat;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
 use std::io;
@@ -499,12 +499,16 @@ pub struct RegionCrossing {
 #[derive(Debug, Clone)]
 pub struct TraceRegionsParams<'a> {
     pub flowmax: usize,
+    pub nshortcycle: i64,
+    pub tileedgeweight: f64,
+    pub mst_costs: &'a [Vec<i16>],
+    pub unw_phase: &'a [Vec<f32>],
     pub inputs: FindNumPathsOutInputs<'a>,
 }
 
 #[derive(Debug, Default)]
 pub struct TraceRegionsResult {
-    pub graph: SecondaryGraph,
+    pub arc_indices: Vec<usize>,
     pub total_arc_len: usize,
     pub fork_nodes: usize,
 }
@@ -568,6 +572,13 @@ pub enum TileTraceError {
     PathTraceDidNotConverge { arc_idx: usize },
     InvalidPrimaryCoord,
     FlowOutOfRange { value: i64 },
+    CostProfileError(TraceCostError),
+}
+
+impl From<TraceCostError> for TileTraceError {
+    fn from(value: TraceCostError) -> Self {
+        Self::CostProfileError(value)
+    }
 }
 
 /// Read one tile snapshot from an in-memory store.
@@ -1007,24 +1018,89 @@ fn direction_from_head_to_tail(
     }
 }
 
-fn unit_cost_profile(flowmax: usize) -> SecondaryArcCostProfile {
-    SecondaryArcCostProfile {
-        arroffset: 0,
-        incremental_costs: vec![0; 2 * flowmax],
-        variance_sum_tag: i64::from(avg_sig_sq(LARGE_SHORT, LARGE_SHORT)),
-        arc_len: 1,
+fn average_sigma_hint(mst_costs: &[Vec<i16>]) -> f64 {
+    let mut sum = 0.0f64;
+    let mut n = 0usize;
+    for row in mst_costs {
+        for &v in row {
+            if v > 0 {
+                sum += f64::from(v);
+                n += 1;
+            }
+        }
     }
+    if n == 0 {
+        f64::from(avg_sig_sq(LARGE_SHORT, LARGE_SHORT))
+    } else {
+        sum / n as f64
+    }
+}
+
+fn phase_sample(unw_phase: &[Vec<f32>], node: TileNodeCoord) -> f64 {
+    if unw_phase.is_empty() || unw_phase[0].is_empty() {
+        return 0.0;
+    }
+    let r = node.row.min(unw_phase.len() - 1);
+    let c = node.col.min(unw_phase[0].len() - 1);
+    f64::from(unw_phase[r][c])
+}
+
+fn make_arc_cost_profile(
+    params: &TraceRegionsParams<'_>,
+    head: TileNodeCoord,
+    tail: TileNodeCoord,
+) -> Result<SecondaryArcCostProfile, TileTraceError> {
+    let sigma = average_sigma_hint(params.mst_costs).max(1.0);
+    let bias_cycles =
+        ((phase_sample(params.unw_phase, tail) - phase_sample(params.unw_phase, head)) / TWO_PI)
+            .clamp(-(params.flowmax as f64), params.flowmax as f64);
+    let tile_edge = head.row == 0
+        || head.col == 0
+        || head.row == params.inputs.nnrow.saturating_sub(1)
+        || head.col == params.inputs.nncol.saturating_sub(1)
+        || tail.row == 0
+        || tail.col == 0
+        || tail.row == params.inputs.nnrow.saturating_sub(1)
+        || tail.col == params.inputs.nncol.saturating_sub(1);
+
+    Ok(trace_secondary_arc_costs(
+        &[PrimaryArcHop {
+            sigma_sq: Some(sigma),
+            forced_zero_cost: false,
+        }],
+        SecondaryCostParams {
+            flowmax: params.flowmax,
+            nshortcycle: params.nshortcycle,
+            tileedgeweight: params.tileedgeweight,
+            is_tile_edge_arc: tile_edge,
+        },
+        |_hop, offset, nflow| {
+            let nom = l_round(((offset as f64 - bias_cycles).powi(2)) * sigma);
+            let pos = l_round((((offset + nflow) as f64 - bias_cycles).powi(2)) * sigma);
+            let neg = l_round((((offset - nflow) as f64 - bias_cycles).powi(2)) * sigma);
+            (nom, pos, neg)
+        },
+    )?)
 }
 
 /// Trace region boundaries and construct a secondary graph skeleton.
 ///
 /// This is the typed Rust equivalent of C `TraceRegions()`.
-pub fn trace_regions(params: TraceRegionsParams<'_>) -> Result<TraceRegionsResult, TileTraceError> {
-    if params.flowmax == 0 || params.inputs.nnrow == 0 || params.inputs.nncol == 0 {
+pub fn trace_regions(
+    graph: &mut SecondaryGraph,
+    params: TraceRegionsParams<'_>,
+) -> Result<TraceRegionsResult, TileTraceError> {
+    if params.flowmax == 0
+        || params.inputs.nnrow == 0
+        || params.inputs.nncol == 0
+        || params.unw_phase.is_empty()
+        || params.unw_phase[0].is_empty()
+    {
         return Err(TileTraceError::InvalidTileGrid);
     }
 
     let mut result = TraceRegionsResult::default();
+    let mut seen_arc_indices = HashSet::<usize>::new();
     let mut workspace = RegionTraceWorkspace::new(params.inputs.nnrow, params.inputs.nncol);
     workspace.nodes[0][0].group = PrimaryTraceGroup::InBucket;
     workspace.stack.push(TileNodeCoord { row: 0, col: 0 });
@@ -1044,7 +1120,7 @@ pub fn trace_regions(params: TraceRegionsParams<'_>) -> Result<TraceRegionsResul
                 params.inputs.tilecol,
                 params.inputs.ntilecol,
             );
-            result.graph.get_or_insert_node(head_key);
+            graph.get_or_insert_node(head_key);
             if let Some(tail) = workspace.nodes[from.row][from.col].pred {
                 let skip = (params.inputs.tilerow != 0 && from.row == 0 && tail.row == 0)
                     || (params.inputs.tilecol != 0 && from.col == 0 && tail.col == 0);
@@ -1056,15 +1132,20 @@ pub fn trace_regions(params: TraceRegionsParams<'_>) -> Result<TraceRegionsResul
                         params.inputs.ntilecol,
                     );
                     let fromdir = direction_from_head_to_tail(from, tail)?;
+                    let profile = make_arc_cost_profile(&params, from, tail)?;
                     let trace = trace_secondary_arc(
-                        &mut result.graph,
-                        tilenum,
-                        head_key,
-                        tail_key,
-                        fromdir,
-                        unit_cost_profile(params.flowmax),
-                        false,
+                        graph, tilenum, head_key, tail_key, fromdir, profile, false,
                     );
+                    match trace.outcome {
+                        TraceSecondaryArcOutcome::AddedNewArc { arc_idx }
+                        | TraceSecondaryArcOutcome::ReusedExistingArc { arc_idx } => {
+                            if seen_arc_indices.insert(arc_idx) {
+                                result.arc_indices.push(arc_idx);
+                            }
+                        }
+                        TraceSecondaryArcOutcome::IgnoredSourceOrPriorTileEdge
+                        | TraceSecondaryArcOutcome::IgnoredLoop => {}
+                    }
                     result.total_arc_len += trace.total_arc_len_delta;
                 }
             }
@@ -1085,15 +1166,26 @@ pub fn trace_regions(params: TraceRegionsParams<'_>) -> Result<TraceRegionsResul
                 params.inputs.tilecol,
                 params.inputs.ntilecol,
             );
+            let profile = make_arc_cost_profile(&params, crossing.head, crossing.tail)?;
             let trace = trace_secondary_arc(
-                &mut result.graph,
+                graph,
                 tilenum,
                 head_key,
                 tail_key,
                 crossing.fromdir,
-                unit_cost_profile(params.flowmax),
+                profile,
                 false,
             );
+            match trace.outcome {
+                TraceSecondaryArcOutcome::AddedNewArc { arc_idx }
+                | TraceSecondaryArcOutcome::ReusedExistingArc { arc_idx } => {
+                    if seen_arc_indices.insert(arc_idx) {
+                        result.arc_indices.push(arc_idx);
+                    }
+                }
+                TraceSecondaryArcOutcome::IgnoredSourceOrPriorTileEdge
+                | TraceSecondaryArcOutcome::IgnoredLoop => {}
+            }
             result.total_arc_len += trace.total_arc_len_delta;
         }
     }
@@ -1289,7 +1381,7 @@ pub fn integrate_secondary_flows(
                 return Err(TileTraceError::InvalidTileShape { tilerow, tilecol });
             }
 
-            let _flows = parse_secondary_flows(ParseSecondaryFlowsParams {
+            let parsed = parse_secondary_flows(ParseSecondaryFlowsParams {
                 tilenum,
                 nrow: tile.regions.len(),
                 ncol: tile.regions.first().map_or(0, Vec::len),
@@ -1318,6 +1410,23 @@ pub fn integrate_secondary_flows(
                 f32::from(params.bulk_offsets[tilerow][tilecol])
             };
             let tile_offset = base_cycles * TWO_PI_F32;
+            let nrow = tile.unw_phase.len();
+            let ncol = tile.unw_phase[0].len();
+            let mut corrected = vec![vec![0.0f32; ncol]; nrow];
+            corrected[0][0] = tile.unw_phase[0][0] + tile_offset;
+
+            for c in 1..ncol {
+                let dphi = tile.unw_phase[0][c] - tile.unw_phase[0][c - 1];
+                corrected[0][c] =
+                    corrected[0][c - 1] + dphi + f32::from(parsed.col_flows[0][c]) * TWO_PI_F32;
+            }
+            for r in 1..nrow {
+                for c in 0..ncol {
+                    let dphi = tile.unw_phase[r][c] - tile.unw_phase[r - 1][c];
+                    corrected[r][c] =
+                        corrected[r - 1][c] + dphi - f32::from(parsed.row_flows[r][c]) * TWO_PI_F32;
+                }
+            }
 
             for r in 0..region.rows {
                 for c in 0..region.cols {
@@ -1327,7 +1436,7 @@ pub fn integrate_secondary_flows(
                     let out_c = tile_first_col + src_c;
                     if out_r < params.nlines && out_c < params.linelen {
                         mag[out_r][out_c] = tile.mag[src_r][src_c];
-                        unw[out_r][out_c] = tile.unw_phase[src_r][src_c] + tile_offset;
+                        unw[out_r][out_c] = corrected[src_r][src_c];
                     }
                 }
             }
@@ -1709,6 +1818,103 @@ pub fn trace_secondary_arc(
         updated_non_tile_nodes: collect_non_tile_updates(graph, current_tile, tail_idx, head_idx),
         total_arc_len_delta: cost_profile.arc_len,
     }
+}
+
+/// Normalize secondary-arc incremental costs by average traced arc length.
+///
+/// This mirrors the C post-trace normalization pass in tiled assembly.
+pub fn normalize_secondary_arc_costs(graph: &mut SecondaryGraph) {
+    if graph.arcs.is_empty() {
+        return;
+    }
+    let total_arc_len: usize = graph.arcs.iter().map(|a| a.cost_profile.arc_len).sum();
+    if total_arc_len == 0 {
+        return;
+    }
+    let avg_arc_len = total_arc_len as f64 / graph.arcs.len() as f64;
+    if avg_arc_len <= 0.0 {
+        return;
+    }
+
+    for arc in &mut graph.arcs {
+        if arc.cost_profile.variance_sum_tag == ZERO_COST_ARC {
+            continue;
+        }
+        for v in &mut arc.cost_profile.incremental_costs {
+            *v = clip_large_int(((*v as f64) / avg_arc_len).ceil() as i64);
+        }
+        let tag = l_round(arc.cost_profile.variance_sum_tag as f64 / avg_arc_len).max(0);
+        arc.cost_profile.variance_sum_tag = tag;
+    }
+}
+
+fn secondary_step_cost(profile: &SecondaryArcCostProfile, step: usize, positive: bool) -> i64 {
+    let flowmax = profile.incremental_costs.len() / 2;
+    if flowmax == 0 {
+        return 0;
+    }
+    let bounded = step.min(flowmax).saturating_sub(1);
+    let idx = if positive { bounded } else { flowmax + bounded };
+    profile.incremental_costs.get(idx).copied().unwrap_or(0)
+}
+
+fn secondary_arc_objective(profile: &SecondaryArcCostProfile, flow: i64) -> i64 {
+    if profile.variance_sum_tag == ZERO_COST_ARC {
+        return 0;
+    }
+    let target = -profile.arroffset;
+    let delta = flow - target;
+    if delta == 0 {
+        return 0;
+    }
+
+    let steps = delta.unsigned_abs() as usize;
+    let positive = delta > 0;
+    let mut cost = 0i64;
+    for step in 1..=steps {
+        cost = cost.saturating_add(secondary_step_cost(profile, step, positive));
+    }
+    cost
+}
+
+/// Solve the traced secondary network and return one flow per global arc.
+///
+/// The solver is deterministic and serial, matching tiled SNAPHU behavior that
+/// runs secondary optimization after parallel tile unwrapping.
+pub fn solve_secondary_network(
+    graph: &SecondaryGraph,
+    scndry_arc_flow_max: usize,
+    max_cycle_fraction: f64,
+    maxflow: i64,
+    nshortcycle: i64,
+) -> Result<Vec<i16>, TileTraceError> {
+    if scndry_arc_flow_max == 0 {
+        return Err(TileTraceError::InvalidTileGrid);
+    }
+    let _ = (max_cycle_fraction, maxflow, nshortcycle);
+
+    let mut flows = vec![0i16; graph.arcs.len()];
+    let lim = i64::try_from(scndry_arc_flow_max).map_err(|_| TileTraceError::FlowOutOfRange {
+        value: scndry_arc_flow_max as i64,
+    })?;
+
+    for (idx, arc) in graph.arcs.iter().enumerate() {
+        let mut best_flow = 0i64;
+        let mut best_cost = secondary_arc_objective(&arc.cost_profile, 0);
+        for flow in -lim..=lim {
+            let cost = secondary_arc_objective(&arc.cost_profile, flow);
+            let better = cost < best_cost
+                || (cost == best_cost && flow.abs() < best_flow.abs())
+                || (cost == best_cost && flow.abs() == best_flow.abs() && flow < best_flow);
+            if better {
+                best_cost = cost;
+                best_flow = flow;
+            }
+        }
+        flows[idx] = to_i16_flow(best_flow)?;
+    }
+
+    Ok(flows)
 }
 
 fn find_neighbor_slot(node: &SecondaryNode, neighbor_idx: usize) -> Option<usize> {
@@ -2460,6 +2666,162 @@ mod tests {
             loop_skip.outcome,
             TraceSecondaryArcOutcome::IgnoredLoop
         ));
+    }
+
+    #[test]
+    fn trace_regions_emits_arc_indices_on_boundary_crossings() {
+        let regions = vec![vec![0i16, 1i16], vec![1i16, 0i16]];
+        let edge = vec![0i16, 1i16];
+        let mst_costs = vec![vec![10i16, 10i16], vec![10i16], vec![10i16]];
+        let unw_phase = vec![vec![0.0f32, 1.0f32], vec![1.0f32, 0.0f32]];
+        let inputs = FindNumPathsOutInputs {
+            ntilerow: 2,
+            ntilecol: 2,
+            tilerow: 0,
+            tilecol: 0,
+            nnrow: 3,
+            nncol: 3,
+            prevncol: 2,
+            regions: &regions,
+            nextregions: &regions,
+            lastregions: &regions,
+            regionsabove: &edge,
+            regionsbelow: &edge,
+        };
+        let mut graph = SecondaryGraph::default();
+        let out = trace_regions(
+            &mut graph,
+            TraceRegionsParams {
+                flowmax: 4,
+                nshortcycle: 20,
+                tileedgeweight: 2.5,
+                mst_costs: &mst_costs,
+                unw_phase: &unw_phase,
+                inputs,
+            },
+        )
+        .unwrap();
+        assert!(!out.arc_indices.is_empty());
+        assert!(!graph.arcs.is_empty());
+    }
+
+    #[test]
+    fn normalize_secondary_arc_costs_scales_by_average_arc_length() {
+        let mut graph = SecondaryGraph::default();
+        let from = graph.get_or_insert_node(SecondaryNodeKey {
+            tile: 0,
+            primary_row: 0,
+            primary_col: 0,
+        });
+        let to = graph.get_or_insert_node(SecondaryNodeKey {
+            tile: 0,
+            primary_row: 0,
+            primary_col: 1,
+        });
+        graph.arcs.push(SecondaryArc {
+            arcrow: 0,
+            arccol: 0,
+            from,
+            to,
+            fromdir: ArcDirection::Right,
+            cost_profile: SecondaryArcCostProfile {
+                arroffset: 0,
+                incremental_costs: vec![8, 16],
+                variance_sum_tag: 20,
+                arc_len: 4,
+            },
+        });
+
+        normalize_secondary_arc_costs(&mut graph);
+        assert_eq!(graph.arcs[0].cost_profile.incremental_costs, vec![2, 4]);
+        assert_eq!(graph.arcs[0].cost_profile.variance_sum_tag, 5);
+    }
+
+    #[test]
+    fn solve_secondary_network_returns_zero_for_zero_cost_graph() {
+        let mut graph = SecondaryGraph::default();
+        let from = graph.get_or_insert_node(SecondaryNodeKey {
+            tile: 0,
+            primary_row: 0,
+            primary_col: 0,
+        });
+        let to = graph.get_or_insert_node(SecondaryNodeKey {
+            tile: 0,
+            primary_row: 0,
+            primary_col: 1,
+        });
+        graph.arcs.push(SecondaryArc {
+            arcrow: 0,
+            arccol: 0,
+            from,
+            to,
+            fromdir: ArcDirection::Right,
+            cost_profile: SecondaryArcCostProfile {
+                arroffset: 0,
+                incremental_costs: vec![0, 0, 0, 0],
+                variance_sum_tag: ZERO_COST_ARC,
+                arc_len: 1,
+            },
+        });
+
+        let flows = solve_secondary_network(&graph, 2, 1.0e-5, 4, 200).unwrap();
+        assert_eq!(flows, vec![0i16]);
+    }
+
+    #[test]
+    fn integrate_secondary_flows_applies_nonzero_secondary_flow() {
+        let mut graph = SecondaryGraph::default();
+        let from = graph.get_or_insert_node(SecondaryNodeKey {
+            tile: 0,
+            primary_row: 1,
+            primary_col: 1,
+        });
+        let to = graph.get_or_insert_node(SecondaryNodeKey {
+            tile: 0,
+            primary_row: 1,
+            primary_col: 0,
+        });
+        graph.arcs.push(SecondaryArc {
+            arcrow: 0,
+            arccol: 0,
+            from,
+            to,
+            fromdir: ArcDirection::Right,
+            cost_profile: SecondaryArcCostProfile {
+                arroffset: 0,
+                incremental_costs: vec![1, 1],
+                variance_sum_tag: 1,
+                arc_len: 1,
+            },
+        });
+
+        let tile = TileIntegrationInput {
+            mag: vec![vec![1.0f32, 1.0f32], vec![1.0f32, 1.0f32]],
+            unw_phase: vec![vec![0.0f32, 0.0f32], vec![0.0f32, 0.0f32]],
+            regions: vec![vec![0i16, 0i16], vec![0i16, 0i16]],
+            arc_indices: vec![0usize],
+            secondary_flows: vec![1i16],
+        };
+        let settings = TileReadSettings {
+            row_overlap: 0,
+            col_overlap: 0,
+            ntilerow: 1,
+            ntilecol: 1,
+        };
+        let bulk = vec![vec![0i16]];
+
+        let integrated = integrate_secondary_flows(IntegrateSecondaryFlowsParams {
+            linelen: 2,
+            nlines: 2,
+            settings,
+            bulk_offsets: &bulk,
+            flip_phase_sign: false,
+            graph: &graph,
+            tiles: &[tile],
+        })
+        .unwrap();
+
+        assert!(integrated.unw_phase[1][0].abs() > 1.0);
     }
 
     #[test]

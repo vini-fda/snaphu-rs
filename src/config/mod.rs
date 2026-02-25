@@ -124,6 +124,9 @@ pub struct RunConfig {
     pub lambda: f64,
     pub nshortcycle: i64,
     pub maxflow: i64,
+    pub scndry_arc_flow_max: usize,
+    pub tile_edge_weight: f64,
+    pub max_cycle_fraction: f64,
     pub infile_format: FileFormat,
     pub outfile_format: FileFormat,
     pub corrfile_format: FileFormat,
@@ -172,6 +175,9 @@ impl Default for RunConfig {
             lambda: 0.056_564_7,
             nshortcycle: 200,
             maxflow: 4,
+            scndry_arc_flow_max: 8,
+            tile_edge_weight: 2.5,
+            max_cycle_fraction: 1.0e-5,
             infile_format: FileFormat::ComplexData,
             outfile_format: FileFormat::AltLineData,
             corrfile_format: FileFormat::AltSampleData,
@@ -351,6 +357,21 @@ pub fn apply_config_entries(
                     params.nthreads = v as usize;
                 }
             }
+            "SCNDRYARCFLOWMAX" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.scndry_arc_flow_max = v as usize;
+                }
+            }
+            "TILEEDGEWEIGHT" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.tile_edge_weight = v;
+                }
+            }
+            "MAXCYCLEFRACTION" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.max_cycle_fraction = v;
+                }
+            }
 
             _ => {} // silently ignore unknown keys
         }
@@ -442,6 +463,18 @@ pub fn check_params(
     }
     if params.maxflow.saturating_mul(params.nshortcycle) > 32_000 {
         return Err(CheckParamsError::InvalidRange("maxflow*nshortcycle"));
+    }
+    if params.scndry_arc_flow_max == 0 {
+        return Err(CheckParamsError::InvalidPositiveParam("scndryarcflowmax"));
+    }
+    if !params.tile_edge_weight.is_finite() || params.tile_edge_weight <= 0.0 {
+        return Err(CheckParamsError::InvalidRange("tileedgeweight"));
+    }
+    if !params.max_cycle_fraction.is_finite()
+        || params.max_cycle_fraction <= 0.0
+        || params.max_cycle_fraction > 1.0
+    {
+        return Err(CheckParamsError::InvalidRange("maxcyclefraction"));
     }
     if params.ntilerow == 0 || params.ntilecol == 0 {
         return Err(CheckParamsError::InvalidTileGrid);
@@ -881,5 +914,63 @@ mod tests {
         let mut params = RunConfig::default();
         apply_config_entries(&entries, &mut infiles, &mut outfiles, &mut params);
         assert_eq!(infiles.dotilemaskfile, "tilemask.bin");
+    }
+
+    #[test]
+    fn apply_config_entries_sets_secondary_network_tuning() {
+        let entries = vec![
+            ConfigEntry {
+                key: "SCNDRYARCFLOWMAX".to_string(),
+                value: "11".to_string(),
+            },
+            ConfigEntry {
+                key: "TILEEDGEWEIGHT".to_string(),
+                value: "3.5".to_string(),
+            },
+            ConfigEntry {
+                key: "MAXCYCLEFRACTION".to_string(),
+                value: "0.25".to_string(),
+            },
+        ];
+        let mut infiles = InputFiles::default();
+        let mut outfiles = OutputFiles::default();
+        let mut params = RunConfig::default();
+        apply_config_entries(&entries, &mut infiles, &mut outfiles, &mut params);
+        assert_eq!(params.scndry_arc_flow_max, 11);
+        assert_eq!(params.tile_edge_weight, 3.5);
+        assert_eq!(params.max_cycle_fraction, 0.25);
+    }
+
+    #[test]
+    fn check_params_rejects_invalid_secondary_network_tuning() {
+        let infiles = InputFiles::default();
+        let outfiles = OutputFiles::default();
+
+        let bad_flowmax = RunConfig {
+            scndry_arc_flow_max: 0,
+            ..RunConfig::default()
+        };
+        assert!(matches!(
+            check_params(&infiles, &outfiles, 128, 64, &bad_flowmax),
+            Err(CheckParamsError::InvalidPositiveParam("scndryarcflowmax"))
+        ));
+
+        let bad_weight = RunConfig {
+            tile_edge_weight: 0.0,
+            ..RunConfig::default()
+        };
+        assert!(matches!(
+            check_params(&infiles, &outfiles, 128, 64, &bad_weight),
+            Err(CheckParamsError::InvalidRange("tileedgeweight"))
+        ));
+
+        let bad_cycle = RunConfig {
+            max_cycle_fraction: 1.5,
+            ..RunConfig::default()
+        };
+        assert!(matches!(
+            check_params(&infiles, &outfiles, 128, 64, &bad_cycle),
+            Err(CheckParamsError::InvalidRange("maxcyclefraction"))
+        ));
     }
 }
