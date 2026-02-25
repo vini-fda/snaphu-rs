@@ -242,6 +242,7 @@ pub fn apply_config_entries(
             "WEIGHTFILE" => infiles.weightfile = entry.value.clone(),
             "COSTINFILE" => infiles.costinfile = entry.value.clone(),
             "BYTEMASKFILE" => infiles.bytemaskfile = entry.value.clone(),
+            "DOTILEMASKFILE" => infiles.dotilemaskfile = entry.value.clone(),
             "INFILE" => infiles.infile = entry.value.clone(),
 
             // Output files
@@ -867,5 +868,18 @@ mod tests {
         let outfiles = OutputFiles::default();
         let params = RunConfig::default();
         assert!(check_params(&infiles, &outfiles, 128, 64, &params).is_ok());
+    }
+
+    #[test]
+    fn apply_config_entries_sets_dotilemaskfile() {
+        let entries = vec![ConfigEntry {
+            key: "DOTILEMASKFILE".to_string(),
+            value: "tilemask.bin".to_string(),
+        }];
+        let mut infiles = InputFiles::default();
+        let mut outfiles = OutputFiles::default();
+        let mut params = RunConfig::default();
+        apply_config_entries(&entries, &mut infiles, &mut outfiles, &mut params);
+        assert_eq!(infiles.dotilemaskfile, "tilemask.bin");
     }
 }

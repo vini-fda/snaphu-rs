@@ -122,6 +122,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Added a dedicated performance-first multi-tile execution roadmap in `MULTI_TILE.md` (threaded scheduling, deterministic assembly, and future memory/disk tile-store strategy).
    - ✅ Multi-tile Phase 1 implemented in `unwrapping::multitile`: parallel tile unwrap with atomic work queue, `OnceLock` result slots, bulk offset propagation via `set_right_edge`/`set_lower_edge`, and assembly via `integrate_secondary_flows`. CLI now routes `--tile` configs to the native Rust multi-tile path (only `-S` and `--assemble` still rejected).
    - ✅ Multi-tile follow-up optimizations landed: reusable worker-local extraction buffers (`mag`/`wrapped`/`power`/`correlation`), stricter seam-length validation (no silent truncation), safer tile-window bounds checks, and verbose per-stage timing for profiling.
+   - ✅ Native multi-tile path now supports `DOTILEMASKFILE`: config parsing/wiring is in place, tile masks are loaded via `set_up_do_tile_mask`, and masked tiles bypass unwrap while still producing deterministic assembled output.
    - ⏳ Full CLI parity is still pending (legacy remains default, and native path currently scopes to single/multi-tile non-quantify workflows).
 
 While translating each CSV-priority batch, update the spreadsheet (or a markdown checklist) with statuses so we know which functions remain.

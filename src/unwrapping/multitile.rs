@@ -200,6 +200,7 @@ pub fn run_multi_tile(
     wrapped_grid: &[Vec<f32>],
     power_grid: Option<&[Vec<f32>]>,
     corr_grid: Option<&[Vec<f32>]>,
+    tile_mask: Option<&[i8]>,
     nlines: usize,
     linelen: usize,
     params: &RunConfig,
@@ -234,6 +235,23 @@ pub fn run_multi_tile(
         ntilecol,
         ..params.clone()
     };
+    let do_tile: Vec<bool> = match tile_mask {
+        Some(mask) => {
+            if mask.len() != ntiles {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "tile mask length {} does not match tile count {}",
+                        mask.len(),
+                        ntiles
+                    ),
+                ));
+            }
+            mask.iter().map(|&v| v != 0).collect()
+        }
+        None => vec![true; ntiles],
+    };
+    let active_tiles = do_tile.iter().filter(|&&v| v).count();
 
     std::thread::scope(|s| {
         for _worker in 0..worker_count {
@@ -242,6 +260,7 @@ pub fn run_multi_tile(
             let next_job = &next_job;
             let failed = &failed;
             let tile_config = &tile_config;
+            let do_tile = &do_tile;
 
             s.spawn(move || {
                 let mut tile_mag: Vec<Vec<f32>> = Vec::new();
@@ -259,6 +278,22 @@ pub fn run_multi_tile(
                     }
                     let entry = &plan[idx];
                     let region = &entry.region;
+
+                    if !do_tile[idx] {
+                        let skip_result =
+                            extract_tile_window(wrapped_grid, region).map(|unw_phase| TileResult {
+                                region: *region,
+                                unw_phase,
+                                regions: vec![vec![0i16; region.cols]; region.rows],
+                            });
+                        let _ = results[idx].set(skip_result.map_err(|e| {
+                            format!(
+                                "tile ({},{}) masked-pass-through extraction failed: {e}",
+                                entry.tilerow, entry.tilecol
+                            )
+                        }));
+                        continue;
+                    }
 
                     if let Err(e) = fill_tile_window(mag_grid, region, &mut tile_mag) {
                         failed.store(true, Ordering::Relaxed);
@@ -379,8 +414,10 @@ pub fn run_multi_tile(
 
     if params.verbose {
         eprintln!(
-            "multi-tile: all {} tiles unwrapped in {:?}, computing bulk offsets",
+            "multi-tile: all {} tiles processed ({} unwrapped, {} masked) in {:?}, computing bulk offsets",
             ntiles,
+            active_tiles,
+            ntiles.saturating_sub(active_tiles),
             t_unwrap.elapsed()
         );
     }
@@ -556,7 +593,7 @@ mod tests {
             ..RunConfig::default()
         };
 
-        let result = run_multi_tile(&mag, &wrapped, None, None, 4, 4, &params)
+        let result = run_multi_tile(&mag, &wrapped, None, None, None, 4, 4, &params)
             .expect("multi-tile should succeed");
 
         assert_eq!(result.mag.len(), 4);
@@ -571,5 +608,28 @@ mod tests {
         let region = TileRegion::new(1, 1, 2, 2);
         let err = extract_tile_window(&scene, &region).expect_err("expected out-of-bounds error");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn run_multi_tile_accepts_full_zero_tile_mask() {
+        // 1x2 scene split into two 1x1 tiles: unwrapping would be invalid for 1x1,
+        // so this verifies masked tiles bypass unwrap and still assemble.
+        let mag = vec![vec![1.0f32, 1.0f32]];
+        let wrapped = vec![vec![0.25f32, -0.5f32]];
+        let tile_mask = vec![0i8, 0i8];
+
+        let params = RunConfig {
+            ntilerow: 1,
+            ntilecol: 2,
+            rowovrlp: 0,
+            colovrlp: 0,
+            nthreads: 2,
+            ..RunConfig::default()
+        };
+
+        let result = run_multi_tile(&mag, &wrapped, None, None, Some(&tile_mask), 1, 2, &params)
+            .expect("masked tiles should bypass unwrap and assemble");
+
+        assert_eq!(result.unw_phase, wrapped);
     }
 }

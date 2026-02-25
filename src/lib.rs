@@ -66,7 +66,7 @@ where
     use crate::io::reader::{
         CorrelationFile, EdgeMaskParams, InputFileFormat, InputReadSpec, IntensityFiles,
         MagnitudeFileFormat, RasterFileFormat, TileWindow, get_n_lines, read_byte_mask,
-        read_correlation, read_input_file, read_intensity, read_magnitude,
+        read_correlation, read_input_file, read_intensity, read_magnitude, set_up_do_tile_mask,
     };
     use crate::io::writer::{OutputFileFormat, write_output_file};
     use crate::unwrapping::flow::{UnwrapTileParams, unwrap_tile};
@@ -380,11 +380,22 @@ options:
     if multi_tile {
         use crate::unwrapping::multitile::run_multi_tile;
 
+        let tile_mask = if infiles.dotilemaskfile.is_empty() {
+            None
+        } else {
+            Some(set_up_do_tile_mask(
+                Some(Path::new(&infiles.dotilemaskfile)),
+                params.ntilerow,
+                params.ntilecol,
+            )?)
+        };
+
         let integrated = run_multi_tile(
             &mag_grid,
             &wrapped_grid,
             power_grid.as_deref(),
             corr_grid.as_deref(),
+            tile_mask.as_ref().map(|m| m.data.as_slice()),
             window.nrow,
             window.ncol,
             &params,
