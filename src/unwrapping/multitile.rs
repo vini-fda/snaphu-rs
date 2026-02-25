@@ -34,7 +34,6 @@ pub struct TilePlanEntry {
 #[derive(Debug, Clone)]
 pub struct TileResult {
     pub region: TileRegion,
-    pub mag: Vec<Vec<f32>>,
     pub unw_phase: Vec<Vec<f32>>,
     pub regions: Vec<Vec<i16>>,
 }
@@ -245,6 +244,7 @@ pub fn run_multi_tile(
             let tile_config = &tile_config;
 
             s.spawn(move || {
+                let mut tile_mag: Vec<Vec<f32>> = Vec::new();
                 let mut tile_wrapped: Vec<Vec<f32>> = Vec::new();
                 let mut tile_power: Option<Vec<Vec<f32>>> = power_grid.map(|_| Vec::new());
                 let mut tile_corr: Option<Vec<Vec<f32>>> = corr_grid.map(|_| Vec::new());
@@ -260,17 +260,14 @@ pub fn run_multi_tile(
                     let entry = &plan[idx];
                     let region = &entry.region;
 
-                    let tile_mag = match extract_tile_window(mag_grid, region) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            failed.store(true, Ordering::Relaxed);
-                            let _ = results[idx].set(Err(format!(
-                                "tile ({},{}) magnitude extraction failed: {e}",
-                                entry.tilerow, entry.tilecol
-                            )));
-                            break;
-                        }
-                    };
+                    if let Err(e) = fill_tile_window(mag_grid, region, &mut tile_mag) {
+                        failed.store(true, Ordering::Relaxed);
+                        let _ = results[idx].set(Err(format!(
+                            "tile ({},{}) magnitude extraction failed: {e}",
+                            entry.tilerow, entry.tilecol
+                        )));
+                        break;
+                    }
                     if let Err(e) = fill_tile_window(wrapped_grid, region, &mut tile_wrapped) {
                         failed.store(true, Ordering::Relaxed);
                         let _ = results[idx].set(Err(format!(
@@ -347,7 +344,6 @@ pub fn run_multi_tile(
 
                             Ok(TileResult {
                                 region: *region,
-                                mag: tile_mag,
                                 unw_phase,
                                 regions: unwrap_result
                                     .regions
@@ -477,16 +473,22 @@ pub fn run_multi_tile(
 
     // 4. Global assembly via integrate_secondary_flows
     let t_assembly = Instant::now();
-    let tiles: Vec<TileIntegrationInput> = tile_results
-        .into_iter()
-        .map(|t| TileIntegrationInput {
-            mag: t.mag,
+    let mut tiles: Vec<TileIntegrationInput> = Vec::with_capacity(tile_results.len());
+    for t in tile_results {
+        let mag = extract_tile_window(mag_grid, &t.region).map_err(|e| {
+            io::Error::other(format!(
+                "assembly magnitude extraction failed for tile starting at ({},{}): {e}",
+                t.region.first_row, t.region.first_col
+            ))
+        })?;
+        tiles.push(TileIntegrationInput {
+            mag,
             unw_phase: t.unw_phase,
             regions: t.regions,
             arc_indices: vec![],
             secondary_flows: vec![],
-        })
-        .collect();
+        });
+    }
 
     let graph = SecondaryGraph::default();
     let settings = TileReadSettings {
