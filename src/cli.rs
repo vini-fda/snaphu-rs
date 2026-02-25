@@ -5,7 +5,10 @@
 //! The real CLI implementation will sit here instead of calling directly into
 //! the legacy C entrypoint via `run_cli`.
 
-use crate::config::{CostMode, InitMethod, InputFiles, OutputFiles, RunConfig};
+use crate::config::{
+    CostMode, InitMethod, InputFiles, OutputFiles, RunConfig, apply_config_entries,
+    read_config_file,
+};
 use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -254,11 +257,30 @@ pub fn process_args(
                         outfiles.logfile = next_arg(raw_args, &mut i, &option_name)?;
                         break;
                     }
-                    'f' | 'C' => {
+                    'f' => {
                         if !is_last {
                             return Err(ProcessArgsError::MissingValue(option_name));
                         }
-                        let _ = next_arg(raw_args, &mut i, &option_name)?;
+                        let conf_path = next_arg(raw_args, &mut i, &option_name)?;
+                        let entries =
+                            read_config_file(std::path::Path::new(&conf_path)).map_err(|_| {
+                                ProcessArgsError::InvalidValue {
+                                    option: option_name,
+                                    value: conf_path,
+                                }
+                            })?;
+                        apply_config_entries(&entries, infiles, outfiles, params);
+                        break;
+                    }
+                    'C' => {
+                        if !is_last {
+                            return Err(ProcessArgsError::MissingValue(option_name));
+                        }
+                        // -C parses a single config line inline
+                        let conf_str = next_arg(raw_args, &mut i, &option_name)?;
+                        if let Ok(Some(entry)) = crate::config::parse_config_line(&conf_str) {
+                            apply_config_entries(&[entry], infiles, outfiles, params);
+                        }
                         break;
                     }
                     _ => return Err(ProcessArgsError::UnknownOption(option_name)),

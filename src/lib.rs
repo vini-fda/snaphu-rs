@@ -60,7 +60,7 @@ where
     S: AsRef<str>,
 {
     use crate::cli::{ProcessArgsError, process_args};
-    use crate::config::{InputFiles, OutputFiles, check_params};
+    use crate::config::{FileFormat, InputFiles, OutputFiles, check_params};
     use crate::data::ops::integrate_phase;
     use crate::data::raster::Raster;
     use crate::io::reader::{
@@ -72,6 +72,31 @@ where
     use crate::unwrapping::flow::{UnwrapTileParams, unwrap_tile};
     use std::io;
     use std::path::{Path, PathBuf};
+
+    fn to_input_file_format(f: FileFormat) -> InputFileFormat {
+        match f {
+            FileFormat::ComplexData => InputFileFormat::ComplexData,
+            FileFormat::FloatData => InputFileFormat::FloatData,
+            FileFormat::AltSampleData => InputFileFormat::AltSampleData,
+            FileFormat::AltLineData => InputFileFormat::AltLineData,
+        }
+    }
+
+    fn to_raster_file_format(f: FileFormat) -> RasterFileFormat {
+        match f {
+            FileFormat::FloatData | FileFormat::ComplexData => RasterFileFormat::FloatData,
+            FileFormat::AltSampleData => RasterFileFormat::AltSampleData,
+            FileFormat::AltLineData => RasterFileFormat::AltLineData,
+        }
+    }
+
+    fn to_output_file_format(f: FileFormat) -> OutputFileFormat {
+        match f {
+            FileFormat::FloatData | FileFormat::ComplexData => OutputFileFormat::FloatData,
+            FileFormat::AltSampleData => OutputFileFormat::AltSampleData,
+            FileFormat::AltLineData => OutputFileFormat::AltLineData,
+        }
+    }
 
     const FULL_HELP: &str = "\
 snaphu v2.0.7
@@ -231,8 +256,8 @@ options:
     }
 
     let infile_path = Path::new(&infiles.infile);
-    let infile_format = InputFileFormat::ComplexData;
-    let unwrapped_line_format = InputFileFormat::AltLineData;
+    let infile_format = to_input_file_format(params.infile_format);
+    let unwrapped_line_format = to_input_file_format(params.unwrapped_infile_format);
     let nlines_full = get_n_lines(
         infile_path,
         linelen,
@@ -265,7 +290,7 @@ options:
             infile: infile_path.to_path_buf(),
             unwrapped: params.unwrapped,
             infile_format,
-            unwrapped_infile_format: RasterFileFormat::AltLineData,
+            unwrapped_infile_format: to_raster_file_format(params.unwrapped_infile_format),
             flip_phase_sign: false,
         },
         linelen,
@@ -277,7 +302,12 @@ options:
         read_magnitude(
             &mut input.mag,
             Some(Path::new(&infiles.magfile)),
-            MagnitudeFileFormat::FloatData,
+            match params.magfile_format {
+                FileFormat::ComplexData => MagnitudeFileFormat::ComplexData,
+                FileFormat::FloatData => MagnitudeFileFormat::FloatData,
+                FileFormat::AltSampleData => MagnitudeFileFormat::AltSampleData,
+                FileFormat::AltLineData => MagnitudeFileFormat::AltLineData,
+            },
             linelen,
             nlines_full,
             window,
@@ -309,7 +339,7 @@ options:
                 } else {
                     Some(PathBuf::from(&infiles.ampfile2))
                 },
-                ampfile_format: RasterFileFormat::FloatData,
+                ampfile_format: to_raster_file_format(params.ampfile_format),
             },
             linelen,
             nlines_full,
@@ -325,7 +355,7 @@ options:
         let corr = read_correlation(
             &CorrelationFile {
                 corrfile: PathBuf::from(&infiles.corrfile),
-                corrfile_format: RasterFileFormat::FloatData,
+                corrfile_format: to_raster_file_format(params.corrfile_format),
             },
             linelen,
             nlines_full,
@@ -372,7 +402,7 @@ options:
         &input.mag,
         &unwrapped,
         Path::new(&outfiles.outfile),
-        OutputFileFormat::AltLineData,
+        to_output_file_format(params.outfile_format),
     )?;
 
     if params.verbose {

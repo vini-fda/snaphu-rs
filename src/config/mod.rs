@@ -9,6 +9,15 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+/// On-disk raster encoding label, mirroring SNAPHU config file tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFormat {
+    ComplexData,
+    FloatData,
+    AltSampleData,
+    AltLineData,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CostMode {
     NoStatCosts,
@@ -115,6 +124,12 @@ pub struct RunConfig {
     pub lambda: f64,
     pub nshortcycle: i64,
     pub maxflow: i64,
+    pub infile_format: FileFormat,
+    pub outfile_format: FileFormat,
+    pub corrfile_format: FileFormat,
+    pub ampfile_format: FileFormat,
+    pub magfile_format: FileFormat,
+    pub unwrapped_infile_format: FileFormat,
 }
 
 impl Default for RunConfig {
@@ -157,6 +172,12 @@ impl Default for RunConfig {
             lambda: 0.056_564_7,
             nshortcycle: 200,
             maxflow: 4,
+            infile_format: FileFormat::ComplexData,
+            outfile_format: FileFormat::AltLineData,
+            corrfile_format: FileFormat::AltSampleData,
+            ampfile_format: FileFormat::AltSampleData,
+            magfile_format: FileFormat::FloatData,
+            unwrapped_infile_format: FileFormat::AltLineData,
         }
     }
 }
@@ -168,6 +189,171 @@ pub fn set_defaults(infiles: &mut InputFiles, outfiles: &mut OutputFiles, params
     *infiles = InputFiles::default();
     *outfiles = OutputFiles::default();
     *params = RunConfig::default();
+}
+
+fn parse_file_format(value: &str) -> Option<FileFormat> {
+    match value {
+        "COMPLEX_DATA" => Some(FileFormat::ComplexData),
+        "FLOAT_DATA" => Some(FileFormat::FloatData),
+        "ALT_SAMPLE_DATA" => Some(FileFormat::AltSampleData),
+        "ALT_LINE_DATA" => Some(FileFormat::AltLineData),
+        _ => None,
+    }
+}
+
+/// Apply parsed config-file entries to the runtime structs.
+///
+/// Maps SNAPHU config keys (e.g. `STATCOSTMODE`, `INFILEFORMAT`) to the
+/// corresponding Rust struct fields. Unknown keys are silently ignored for
+/// forward compatibility.
+pub fn apply_config_entries(
+    entries: &[ConfigEntry],
+    infiles: &mut InputFiles,
+    outfiles: &mut OutputFiles,
+    params: &mut RunConfig,
+) {
+    for entry in entries {
+        match entry.key.as_str() {
+            // Cost / algorithm mode
+            "STATCOSTMODE" => match entry.value.as_str() {
+                "TOPO" => params.cost_mode = CostMode::Topo,
+                "DEFO" => params.cost_mode = CostMode::Defo,
+                "SMOOTH" => params.cost_mode = CostMode::Smooth,
+                "NOSTATCOSTS" => params.cost_mode = CostMode::NoStatCosts,
+                _ => {}
+            },
+            "INITMETHOD" => match entry.value.as_str() {
+                "MST" => params.init_method = InitMethod::Mst,
+                "MCF" => params.init_method = InitMethod::Mcf,
+                _ => {}
+            },
+
+            // Boolean flags
+            "VERBOSE" => params.verbose = is_true(&entry.value),
+            "INITONLY" => params.init_only = is_true(&entry.value),
+            "UNWRAPPED_IN" => params.unwrapped = is_true(&entry.value),
+            "DEBUG" | "DUMPALL" => params.dump_all = is_true(&entry.value),
+
+            // Input files
+            "CORRFILE" => infiles.corrfile = entry.value.clone(),
+            "AMPFILE" => infiles.ampfile = entry.value.clone(),
+            "MAGFILE" => infiles.magfile = entry.value.clone(),
+            "ESTIMATEFILE" => infiles.estfile = entry.value.clone(),
+            "WEIGHTFILE" => infiles.weightfile = entry.value.clone(),
+            "COSTINFILE" => infiles.costinfile = entry.value.clone(),
+            "BYTEMASKFILE" => infiles.bytemaskfile = entry.value.clone(),
+            "INFILE" => infiles.infile = entry.value.clone(),
+
+            // Output files
+            "OUTFILE" => outfiles.outfile = entry.value.clone(),
+            "LOGFILE" => outfiles.logfile = entry.value.clone(),
+            "COSTOUTFILE" => outfiles.costoutfile = entry.value.clone(),
+            "CONNCOMPFILE" => outfiles.conncompfile = entry.value.clone(),
+
+            // File formats
+            "INFILEFORMAT" => {
+                if let Some(f) = parse_file_format(&entry.value) {
+                    params.infile_format = f;
+                }
+            }
+            "UNWRAPPEDINFILEFORMAT" => {
+                if let Some(f) = parse_file_format(&entry.value) {
+                    params.unwrapped_infile_format = f;
+                }
+            }
+            "OUTFILEFORMAT" => {
+                if let Some(f) = parse_file_format(&entry.value) {
+                    params.outfile_format = f;
+                }
+            }
+            "CORRFILEFORMAT" => {
+                if let Some(f) = parse_file_format(&entry.value) {
+                    params.corrfile_format = f;
+                }
+            }
+            "AMPFILEFORMAT" => {
+                if let Some(f) = parse_file_format(&entry.value) {
+                    params.ampfile_format = f;
+                }
+            }
+            "MAGFILEFORMAT" => {
+                if let Some(f) = parse_file_format(&entry.value) {
+                    params.magfile_format = f;
+                }
+            }
+
+            // Geometry / SAR parameters
+            "ORBITRADIUS" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.orbitradius = v;
+                }
+            }
+            "EARTHRADIUS" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.earthradius = v;
+                }
+            }
+            "BASELINE" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.baseline = v;
+                }
+            }
+            "NEARRANGE" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.nearrange = v;
+                }
+            }
+            "DR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.dr = v;
+                }
+            }
+            "DA" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.da = v;
+                }
+            }
+            "LAMBDA" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.lambda = v;
+                }
+            }
+            "NCORRLOOKS" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.ncorrlooks = v;
+                }
+            }
+
+            // Tile control
+            "NTILEROW" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.ntilerow = v as usize;
+                }
+            }
+            "NTILECOL" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.ntilecol = v as usize;
+                }
+            }
+            "ROWOVRLP" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.rowovrlp = v as usize;
+                }
+            }
+            "COLOVRLP" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.colovrlp = v as usize;
+                }
+            }
+            "NPROC" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.nthreads = v as usize;
+                }
+            }
+
+            _ => {} // silently ignore unknown keys
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
