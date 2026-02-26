@@ -1,9 +1,4 @@
-#![allow(dead_code)]
-
-//! Command-line interface scaffolding.
-//!
-//! The real CLI implementation will sit here instead of calling directly into
-//! the legacy C entrypoint via `run_cli`.
+//! Command-line interface to snaphu-rs.
 
 use crate::config::{
     CostMode, InitMethod, InputFiles, OutputFiles, RunConfig, apply_config_entries,
