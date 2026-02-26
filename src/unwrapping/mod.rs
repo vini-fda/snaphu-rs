@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! High-level unwrapping orchestration.
 
 pub mod flow;

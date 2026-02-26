@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Linear programming cost helpers.
 
 use crate::data::ops::l_round;

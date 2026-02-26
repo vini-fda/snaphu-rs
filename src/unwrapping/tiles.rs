@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Tile assembly workflows.
 //!
 //! This module contains the typed Rust translation of secondary-arc tracing

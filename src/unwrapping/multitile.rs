@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Multi-tile parallel unwrapping orchestration.
 //!
 //! This module implements the parallel tile unwrapping pipeline:

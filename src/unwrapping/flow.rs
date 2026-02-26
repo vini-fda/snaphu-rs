@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Flow-based unwrapping modes.
 
 use crate::config::{InputFiles, OutputFiles, RunConfig};
