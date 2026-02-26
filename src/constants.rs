@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Numeric constants mirrored from the original SNAPHU macros.
 
 /// Equivalent to the `LARGESHORT` macro used throughout the C sources.
