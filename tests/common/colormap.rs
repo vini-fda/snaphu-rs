@@ -1,21 +1,30 @@
-//! Module to create human-understandable colormaps for visualization with plots
-#[inline(always)]
-pub fn to_byte(x: f32) -> u8 {
-    (255.0 * x) as u8
-}
+//! Module to create human-understandable colormaps for test data visualization with plots
+use std::f32::consts::TAU;
 
-pub fn cmap(re: f32, im: f32) -> [u8; 3] {
-    let mut phase = im.atan2(re);
-    if phase < 0.0 {
-        phase += std::f32::consts::TAU;
-    }
-    // phase normalized to the range [0, 1]
-    cubehelix_colormap(phase / std::f32::consts::TAU)
-}
-
-/// Cubehelix cycle colormap
+/// Cubehelix cycle colormap.
+///
+/// The input is assumed to be unwrapped phase in radians, so any valid fp32 value.
+///
+/// The output is an array with the [red, green, blue] channels from 0 to 255 as bytes (u8).
+///
 /// Based on the BEAM Color Palette Definition
-pub fn cubehelix_colormap(x: f32) -> [u8; 3] {
+pub fn cubehelix_colormap_unwrapped(uw_phase: f32) -> [u8; 3] {
+    let remainder = uw_phase.rem_euclid(TAU);
+    let normalized_phase = remainder / TAU;
+    cubehelix_colormap_f32(normalized_phase).map(to_byte)
+}
+
+/// Scales the floating point normalized phase value (assumed to be in the range [0, 1])
+/// to the range [0, 255] then convert to a byte.
+///
+/// Tho avoid underflow or overflow, this function clamps the value.
+#[inline(always)]
+fn to_byte(normalized_phase: f32) -> u8 {
+    (255.0 * normalized_phase).clamp(0.0, 255.0) as u8
+}
+
+/// Cubehelix cycle colormap in normalized [0, 1] RGB.
+fn cubehelix_colormap_f32(x: f32) -> [f32; 3] {
     // Color points from the palette (normalized to [0,1])
     let colors: [[f32; 3]; 8] = [
         [110.0 / 255.0, 60.0 / 255.0, 170.0 / 255.0], // color0
@@ -71,5 +80,5 @@ pub fn cubehelix_colormap(x: f32) -> [u8; 3] {
 
     let blue = a * t3 + b * t2 + c * t + d;
 
-    [red, green, blue].map(to_byte)
+    [red, green, blue]
 }
