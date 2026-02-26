@@ -1427,10 +1427,17 @@ pub fn integrate_secondary_flows(
                     corrected[0][c - 1] + dphi + f32::from(parsed.col_flows[0][c]) * TWO_PI_F32;
             }
             for r in 1..nrow {
-                for c in 0..ncol {
-                    let dphi = tile.unw_phase[r][c] - tile.unw_phase[r - 1][c];
-                    corrected[r][c] =
-                        corrected[r - 1][c] + dphi - f32::from(parsed.row_flows[r][c]) * TWO_PI_F32;
+                let (prev_rows, curr_and_after) = corrected.split_at_mut(r);
+                let prev_corr = &prev_rows[r - 1];
+                let curr_corr = &mut curr_and_after[0];
+
+                let unw_prev = &tile.unw_phase[r - 1];
+                let unw_curr = &tile.unw_phase[r];
+                let row_flows = &parsed.row_flows[r];
+
+                for (c, cell) in curr_corr.iter_mut().enumerate().take(ncol) {
+                    let dphi = unw_curr[c] - unw_prev[c];
+                    *cell = prev_corr[c] + dphi - f32::from(row_flows[c]) * TWO_PI_F32;
                 }
             }
 
