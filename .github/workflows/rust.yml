@@ -18,7 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure auth for private git dependencies
-        run: git config --global url."https://${{ secrets.COST_SCALING_RS_PAT }}@github.com/".insteadOf "https://github.com/"
+        env:
+          COST_SCALING_RS_PAT: ${{ secrets.COST_SCALING_RS_PAT }}
+        run: |
+          if [ -z "${COST_SCALING_RS_PAT}" ]; then
+            echo "COST_SCALING_RS_PAT is not set. Cannot fetch private git dependency."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${COST_SCALING_RS_PAT}@github.com/".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets
@@ -29,7 +36,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure auth for private git dependencies
-        run: git config --global url."https://${{ secrets.COST_SCALING_RS_PAT }}@github.com/".insteadOf "https://github.com/"
+        env:
+          COST_SCALING_RS_PAT: ${{ secrets.COST_SCALING_RS_PAT }}
+        run: |
+          if [ -z "${COST_SCALING_RS_PAT}" ]; then
+            echo "COST_SCALING_RS_PAT is not set. Cannot fetch private git dependency."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${COST_SCALING_RS_PAT}@github.com/".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -41,7 +55,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure auth for private git dependencies
-        run: git config --global url."https://${{ secrets.COST_SCALING_RS_PAT }}@github.com/".insteadOf "https://github.com/"
+        env:
+          COST_SCALING_RS_PAT: ${{ secrets.COST_SCALING_RS_PAT }}
+        run: |
+          if [ -z "${COST_SCALING_RS_PAT}" ]; then
+            echo "COST_SCALING_RS_PAT is not set. Cannot fetch private git dependency."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${COST_SCALING_RS_PAT}@github.com/".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -54,7 +75,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure auth for private git dependencies
-        run: git config --global url."https://${{ secrets.COST_SCALING_RS_PAT }}@github.com/".insteadOf "https://github.com/"
+        env:
+          COST_SCALING_RS_PAT: ${{ secrets.COST_SCALING_RS_PAT }}
+        run: |
+          if [ -z "${COST_SCALING_RS_PAT}" ]; then
+            echo "COST_SCALING_RS_PAT is not set. Cannot fetch private git dependency."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${COST_SCALING_RS_PAT}@github.com/".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install C toolchain for reference binary
@@ -69,7 +97,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure auth for private git dependencies
-        run: git config --global url."https://${{ secrets.COST_SCALING_RS_PAT }}@github.com/".insteadOf "https://github.com/"
+        env:
+          COST_SCALING_RS_PAT: ${{ secrets.COST_SCALING_RS_PAT }}
+        run: |
+          if [ -z "${COST_SCALING_RS_PAT}" ]; then
+            echo "COST_SCALING_RS_PAT is not set. Cannot fetch private git dependency."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${COST_SCALING_RS_PAT}@github.com/".insteadOf "https://github.com/"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps
