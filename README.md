@@ -6,7 +6,7 @@ This is a Rust-based implementation of the [SNAPHU](https://web.stanford.edu/gro
 a C implementation of a statistical-cost, network-flow algorithm for two-dimensional phase unwrapping.
 
 This library is still heavily **work-in-progress**. The plan is to have a library that closely matches the original C implementation, but
-using safe and idiomatic Rust idioms, with proper documentation, and an easy-to-use API.
+using 100% idiomatic Rust, with proper documentation, and an easy-to-use API.
 
 The emphasis is first on **correctness**, then performance. So tests comparing both implementations should be implemented soon.
 
