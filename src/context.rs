@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Shared runtime state for the SNAPHU algorithm.
 
 use crate::config::RunConfig;
