@@ -65,7 +65,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - The tool accepts a configurable SNAPHU binary path instead of relying on a hard-coded absolute path, and forwards extra arguments so we can exercise different C features while gathering fixtures.
    - Rerun logging, PNG dumps, and README instructions are in place, so the example doubles as a visualization harness and a reproducible dataset generator for parity tests.
 1. **Project scaffolding** *(DONE)*
-   - The c2rust translation now sits behind the `legacy-cli` feature gate and the crate compiles quickly with `--no-default-features`, giving us a clean slate for the idiomatic rewrite.
+   - The crate compiles quickly with the native Rust CLI path, giving us a clean slate for the idiomatic rewrite while preserving c2rust outputs as reference material.
    - Placeholder modules (`cli`, `config`, `context`, `data`, `costs`, `network`, `unwrapping`, `io`) exist with minimal structs so the new architecture can be filled in incrementally.
 2. **Leaf utilities (Priority ≥5)** *(DONE for translatable entries)*
    - ✅ Arithmetic kernels now live under `data::ops` with unit coverage for `Add2DFloatArrays`, `BoxCarAvg`, `AvgSigSq`, and `LClip`.
@@ -125,7 +125,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Multi-tile follow-up optimizations landed: reusable worker-local extraction buffers (`mag`/`wrapped`/`power`/`correlation`), stricter seam-length validation (no silent truncation), safer tile-window bounds checks, and verbose per-stage timing for profiling.
    - ✅ Native multi-tile path now supports `DOTILEMASKFILE`: config parsing/wiring is in place, tile masks are loaded via `set_up_do_tile_mask`, and masked tiles bypass unwrap while still producing deterministic assembled output.
    - ✅ Added a C/Rust parity-debug pass for 600x600 Kumamoto runs: extra DEFO/SMOOTH config knobs are now parsed, cost construction and CS2 graph mapping were aligned with C conventions, and both binaries can emit stage-level debug counters for side-by-side diagnostics.
-   - ⏳ Full CLI parity is still pending (legacy remains default, and native path currently scopes to single/multi-tile non-quantify workflows).
+   - ⏳ Full CLI parity is still pending (native path currently scopes to single/multi-tile non-quantify workflows).
 
 While translating each CSV-priority batch, update the spreadsheet (or a markdown checklist) with statuses so we know which functions remain.
 
@@ -137,7 +137,7 @@ While translating each CSV-priority batch, update the spreadsheet (or a markdown
 ## Testing & Validation Strategy
 - **Golden fixtures**: Capture small interferogram tiles + expected unwrap outputs from the C binary. Re-run after each major module to prevent drift.
 - **Property tests**: For cost calculators and lookup tables, assert monotonicity, ranges, and invariants mirrored from SNAPHU docs.
-- **Integration harness**: Keep `snaphu_full.rs` accessible via `cargo test --features legacy-cli` to run the original pipeline as a reference until parity is achieved.
+- **Integration harness**: Keep the original C pipeline (`snaphu_original/snaphu`) runnable as a reference until full parity is achieved.
 - **Example-driven datasets**: Use `cargo run --example complex_writer` to regenerate wrapped interferograms on demand, collect the resulting `.bin` / `.out` files, and compare SNAPHU vs SNAPHU-rs outputs to refresh fixtures whenever upstream logic evolves.
 
 ## Risk & Mitigation
@@ -153,6 +153,6 @@ While translating each CSV-priority batch, update the spreadsheet (or a markdown
 - `Cargo.toml` includes `cost_scaling_rs` (package `cost-scaling-rs`) and `solve_cs2` is backed by the solver integration.
 
 ## Definition of Done
-1. `cargo test --no-default-features` passes with only the idiomatic Rust implementation (no legacy feature flag required).
+1. `cargo test --no-default-features` passes with only the idiomatic Rust implementation.
 2. CLI arguments, config file semantics, and output formats match the original binary (validated via regression suite).
 3. All functions listed in `snaphu_translation_order.csv` are marked `DONE` or `NOT_PLANNED` with explicit rationale.

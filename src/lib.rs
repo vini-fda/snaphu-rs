@@ -1,14 +1,4 @@
 //! Public API surface for the snaphu-rs crate.
-//!
-//! The real translation work will progressively replace the temporary
-//! `legacy-cli` feature, which still shells out to the original C pipeline
-//! through the auto-generated `snaphu_full` module.
-
-#[cfg(feature = "legacy-cli")]
-extern crate libc;
-
-#[cfg(feature = "legacy-cli")]
-mod snaphu_full;
 
 pub mod cli;
 pub mod config;
@@ -22,40 +12,7 @@ pub mod phase_compare;
 pub mod unwrapping;
 
 /// Run the SNAPHU CLI.
-#[cfg(feature = "legacy-cli")]
 pub fn run_cli<I, S>(args: I) -> std::io::Result<()>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    use std::ffi::CString;
-    use std::os::raw::{c_char, c_int};
-
-    let cstrings: Vec<CString> = args
-        .into_iter()
-        .map(|s| CString::new(s.as_ref()))
-        .collect::<Result<_, _>>()
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "argument contains interior NUL byte",
-            )
-        })?;
-
-    let mut argv: Vec<*mut c_char> = cstrings.iter().map(|s| s.as_ptr() as *mut c_char).collect();
-    let argc = argv.len() as c_int;
-
-    let exit_code: i32 = unsafe { snaphu_sys::run_main(argc, argv.as_mut_ptr()) };
-    if exit_code == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::from_raw_os_error(exit_code))
-    }
-}
-
-/// Placeholder while the idiomatic Rust translation is under construction.
-#[cfg(not(feature = "legacy-cli"))]
-pub fn run_cli<I, S>(_args: I) -> std::io::Result<()>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
@@ -243,7 +200,7 @@ options:
         ))
     }
 
-    let raw_args = _args
+    let raw_args = args
         .into_iter()
         .map(|s| s.as_ref().to_string())
         .collect::<Vec<_>>();
@@ -562,11 +519,9 @@ options:
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "legacy-cli"))]
     use super::run_cli;
-    #[cfg(not(feature = "legacy-cli"))]
     use std::fs;
-    #[cfg(not(feature = "legacy-cli"))]
+
     fn tmp_path(name: &str) -> std::path::PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -575,13 +530,11 @@ mod tests {
         std::env::temp_dir().join(format!("snaphu_rs_{name}_{}_{}", std::process::id(), stamp))
     }
 
-    #[cfg(not(feature = "legacy-cli"))]
     #[test]
     fn run_cli_native_help_returns_ok() {
         assert!(run_cli(["snaphu", "--help"]).is_ok());
     }
 
-    #[cfg(not(feature = "legacy-cli"))]
     #[test]
     fn run_cli_native_single_tile_smoke() {
         let input = tmp_path("in");

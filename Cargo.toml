@@ -12,12 +12,7 @@ readme = "README.md"
 keywords = ["snaphu", "insar", "sar"]
 categories = ["science", "mathematics"]
 
-[features]
-default = ["legacy-cli"]
-legacy-cli = ["snaphu-sys"]
-
 [dependencies]
-snaphu-sys = { version = "0.1.2", optional = true }
 libc = "0.2"
 log = "0.4.29"
 env_logger = "0.11.8"
