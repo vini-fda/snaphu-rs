@@ -382,7 +382,7 @@ options:
     let wrapped_grid = to_grid_f32(&input.wrapped_phase);
 
     if multi_tile {
-        use crate::unwrapping::multitile::run_multi_tile;
+        use crate::unwrapping::multitile::{MultiTileRunParams, run_multi_tile};
 
         let tile_mask = if infiles.dotilemaskfile.is_empty() {
             None
@@ -394,16 +394,16 @@ options:
             )?)
         };
 
-        let integrated = run_multi_tile(
-            &mag_grid,
-            &wrapped_grid,
-            power_grid.as_deref(),
-            corr_grid.as_deref(),
-            tile_mask.as_ref().map(|m| m.data.as_slice()),
-            window.nrow,
-            window.ncol,
-            &params,
-        )?;
+        let integrated = run_multi_tile(MultiTileRunParams {
+            mag_grid: &mag_grid,
+            wrapped_grid: &wrapped_grid,
+            power_grid: power_grid.as_deref(),
+            corr_grid: corr_grid.as_deref(),
+            tile_mask: tile_mask.as_ref().map(|m| m.data.as_slice()),
+            nlines: window.nrow,
+            linelen: window.ncol,
+            params: &params,
+        })?;
 
         let out_mag = Raster::new(
             window.ncol,

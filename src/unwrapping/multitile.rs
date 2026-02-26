@@ -43,29 +43,32 @@ pub struct TileResult {
     pub secondary_flows: Vec<i16>,
 }
 
-/// Compute tile region geometry (equivalent to setup_tile's geometry logic).
-fn compute_tile_region(
+#[derive(Debug, Clone, Copy)]
+struct TileGridSpec {
     nlines: usize,
     linelen: usize,
     ntilerow: usize,
     ntilecol: usize,
     rowovrlp: usize,
     colovrlp: usize,
-    tilerow: usize,
-    tilecol: usize,
-) -> TileRegion {
-    let ni = (nlines + (ntilerow - 1) * rowovrlp).div_ceil(ntilerow);
-    let nj = (linelen + (ntilecol - 1) * colovrlp).div_ceil(ntilecol);
+}
 
-    let first_row = tilerow.saturating_mul(ni.saturating_sub(rowovrlp));
-    let first_col = tilecol.saturating_mul(nj.saturating_sub(colovrlp));
-    let tile_nrow = if tilerow == ntilerow - 1 {
-        nlines.saturating_sub((ntilerow - 1) * ni.saturating_sub(rowovrlp))
+/// Compute tile region geometry (equivalent to setup_tile's geometry logic).
+fn compute_tile_region(spec: TileGridSpec, tilerow: usize, tilecol: usize) -> TileRegion {
+    let ni = (spec.nlines + (spec.ntilerow - 1) * spec.rowovrlp).div_ceil(spec.ntilerow);
+    let nj = (spec.linelen + (spec.ntilecol - 1) * spec.colovrlp).div_ceil(spec.ntilecol);
+
+    let first_row = tilerow.saturating_mul(ni.saturating_sub(spec.rowovrlp));
+    let first_col = tilecol.saturating_mul(nj.saturating_sub(spec.colovrlp));
+    let tile_nrow = if tilerow == spec.ntilerow - 1 {
+        spec.nlines
+            .saturating_sub((spec.ntilerow - 1) * ni.saturating_sub(spec.rowovrlp))
     } else {
         ni
     };
-    let tile_ncol = if tilecol == ntilecol - 1 {
-        linelen.saturating_sub((ntilecol - 1) * nj.saturating_sub(colovrlp))
+    let tile_ncol = if tilecol == spec.ntilecol - 1 {
+        spec.linelen
+            .saturating_sub((spec.ntilecol - 1) * nj.saturating_sub(spec.colovrlp))
     } else {
         nj
     };
@@ -88,20 +91,20 @@ pub fn build_tile_plan(
         ));
     }
 
+    let spec = TileGridSpec {
+        nlines,
+        linelen,
+        ntilerow,
+        ntilecol,
+        rowovrlp: params.rowovrlp,
+        colovrlp: params.colovrlp,
+    };
+
     let mut plan = Vec::with_capacity(ntilerow * ntilecol);
     for tilerow in 0..ntilerow {
         for tilecol in 0..ntilecol {
             let tilenum = tilerow * ntilecol + tilecol;
-            let region = compute_tile_region(
-                nlines,
-                linelen,
-                ntilerow,
-                ntilecol,
-                params.rowovrlp,
-                params.colovrlp,
-                tilerow,
-                tilecol,
-            );
+            let region = compute_tile_region(spec, tilerow, tilecol);
             plan.push(TilePlanEntry {
                 tilerow,
                 tilecol,
@@ -231,16 +234,29 @@ fn fit_edge_row(src: Option<&[i16]>, cols: usize) -> Vec<i16> {
 /// Run the multi-tile unwrapping pipeline end-to-end.
 ///
 /// Returns the assembled `(mag, unw_phase)` grids at full scene dimensions.
-pub fn run_multi_tile(
-    mag_grid: &[Vec<f32>],
-    wrapped_grid: &[Vec<f32>],
-    power_grid: Option<&[Vec<f32>]>,
-    corr_grid: Option<&[Vec<f32>]>,
-    tile_mask: Option<&[i8]>,
-    nlines: usize,
-    linelen: usize,
-    params: &RunConfig,
-) -> io::Result<IntegratedSecondaryOutput> {
+pub struct MultiTileRunParams<'a> {
+    pub mag_grid: &'a [Vec<f32>],
+    pub wrapped_grid: &'a [Vec<f32>],
+    pub power_grid: Option<&'a [Vec<f32>]>,
+    pub corr_grid: Option<&'a [Vec<f32>]>,
+    pub tile_mask: Option<&'a [i8]>,
+    pub nlines: usize,
+    pub linelen: usize,
+    pub params: &'a RunConfig,
+}
+
+pub fn run_multi_tile(input: MultiTileRunParams<'_>) -> io::Result<IntegratedSecondaryOutput> {
+    let MultiTileRunParams {
+        mag_grid,
+        wrapped_grid,
+        power_grid,
+        corr_grid,
+        tile_mask,
+        nlines,
+        linelen,
+        params,
+    } = input;
+
     let ntilerow = params.ntilerow;
     let ntilecol = params.ntilecol;
     let ntiles = ntilerow * ntilecol;
@@ -758,8 +774,17 @@ mod tests {
             ..RunConfig::default()
         };
 
-        let result = run_multi_tile(&mag, &wrapped, None, None, None, 4, 4, &params)
-            .expect("multi-tile should succeed");
+        let result = run_multi_tile(MultiTileRunParams {
+            mag_grid: &mag,
+            wrapped_grid: &wrapped,
+            power_grid: None,
+            corr_grid: None,
+            tile_mask: None,
+            nlines: 4,
+            linelen: 4,
+            params: &params,
+        })
+        .expect("multi-tile should succeed");
 
         assert_eq!(result.mag.len(), 4);
         assert_eq!(result.unw_phase.len(), 4);
@@ -792,8 +817,17 @@ mod tests {
             ..RunConfig::default()
         };
 
-        let result = run_multi_tile(&mag, &wrapped, None, None, Some(&tile_mask), 1, 2, &params)
-            .expect("masked tiles should bypass unwrap and assemble");
+        let result = run_multi_tile(MultiTileRunParams {
+            mag_grid: &mag,
+            wrapped_grid: &wrapped,
+            power_grid: None,
+            corr_grid: None,
+            tile_mask: Some(&tile_mask),
+            nlines: 1,
+            linelen: 2,
+            params: &params,
+        })
+        .expect("masked tiles should bypass unwrap and assemble");
 
         assert_eq!(result.unw_phase, wrapped);
     }
@@ -816,8 +850,17 @@ mod tests {
             ..RunConfig::default()
         };
 
-        let result =
-            run_multi_tile(&mag, &wrapped, None, None, None, 2, 4, &params).expect("run succeeds");
+        let result = run_multi_tile(MultiTileRunParams {
+            mag_grid: &mag,
+            wrapped_grid: &wrapped,
+            power_grid: None,
+            corr_grid: None,
+            tile_mask: None,
+            nlines: 2,
+            linelen: 4,
+            params: &params,
+        })
+        .expect("run succeeds");
         assert_eq!(result.unw_phase.len(), 2);
         assert_eq!(result.unw_phase[0].len(), 4);
     }
