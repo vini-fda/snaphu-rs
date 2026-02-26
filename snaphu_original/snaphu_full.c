@@ -2836,6 +2836,39 @@ int BuildCostArrays(void ***costsptr, short ***mstcostsptr,
       }
     }
 
+    if(getenv("SNAPHU_DEBUG_PARITY")!=NULL){
+      long mstmin=LARGESHORT, mstmax=-LARGESHORT;
+      long mstzero=0, mstlarge=0, mstcount=0;
+      double mstsum=0.0;
+      for(row=0;row<2*nrow-1;row++){
+        if(row<nrow-1){
+          maxcol=ncol;
+        }else{
+          maxcol=ncol-1;
+        }
+        for(col=0;col<maxcol;col++){
+          short v=weights[row][col];
+          if(v<mstmin){
+            mstmin=v;
+          }
+          if(v>mstmax){
+            mstmax=v;
+          }
+          if(v==0){
+            mstzero++;
+          }
+          if(v==LARGESHORT){
+            mstlarge++;
+          }
+          mstsum+=v;
+          mstcount++;
+        }
+      }
+      printf("PARITY BuildCostArrays MST stats: count=%ld min=%ld max=%ld mean=%.6f zero=%ld large_short=%ld\n",
+             mstcount,mstmin,mstmax,mstsum/(mstcount?mstcount:1),mstzero,mstlarge);
+      fflush(stdout);
+    }
+
     /* dump mst initialization costs */
     if(strlen(outfiles->mstrowcostfile)){
       Write2DArray((void **)rowweight,outfiles->mstrowcostfile,
@@ -3295,6 +3328,7 @@ void **BuildStatCostsDefo(float **wrappedphase, float **mag,
 
   long row, col;
   long kperpdpsi, kpardpsi, sigsqshortmin, defomax;
+  long maskedcount, lowcorrcount, totalcount;
   double rho, rho0, rhopow;
   double defocorrthresh, sigsqcorr, sigsqrho, sigsqrhoconst;
   double glay, costscale;
@@ -3322,6 +3356,9 @@ void **BuildStatCostsDefo(float **wrappedphase, float **mag,
   nshortcyclesq=nshortcycle*nshortcycle;
   glay=-costscale*log(params->defolayconst);
   defomax=(long )ceil(params->defomax*nshortcycle);
+  maskedcount=0;
+  lowcorrcount=0;
+  totalcount=0;
 
   /* get memory for wrapped difference arrays */
   dpsi=(float **)Get2DMem(nrow,ncol,sizeof(float *),sizeof(float));
@@ -3343,6 +3380,8 @@ void **BuildStatCostsDefo(float **wrappedphase, float **mag,
 
         /* masked pixel */
         MaskCost(&colcost[row][col]);
+        maskedcount++;
+        totalcount++;
 
       }else{
 
@@ -3353,7 +3392,9 @@ void **BuildStatCostsDefo(float **wrappedphase, float **mag,
         rho=(corr[row][col]+corr[row][col+1])/2.0;
         if(rho<defocorrthresh){
           rho=0;
+          lowcorrcount++;
         }
+        totalcount++;
         sigsqrho=(sigsqrhoconst*pow(1-rho,rhopow)+sigsqcorr)*nshortcyclesq;
 
         /* set cost paramaters in terms of flow, represented as shorts */
@@ -3406,6 +3447,8 @@ void **BuildStatCostsDefo(float **wrappedphase, float **mag,
 
         /* masked pixel */
         MaskCost(&rowcost[row][col]);
+        maskedcount++;
+        totalcount++;
 
       }else{
 
@@ -3416,7 +3459,9 @@ void **BuildStatCostsDefo(float **wrappedphase, float **mag,
         rho=(corr[row][col]+corr[row+1][col])/2.0;
         if(rho<defocorrthresh){
           rho=0;
+          lowcorrcount++;
         }
+        totalcount++;
         sigsqrho=(sigsqrhoconst*pow(1-rho,rhopow)+sigsqcorr)*nshortcyclesq;
 
         /* set cost paramaters in terms of flow, represented as shorts */
@@ -3458,6 +3503,12 @@ void **BuildStatCostsDefo(float **wrappedphase, float **mag,
   Free2DArray((void **)corr,nrow);
   Free2DArray((void **)dpsi,nrow);
   Free2DArray((void **)avgdpsi,nrow);
+
+  if(getenv("SNAPHU_DEBUG_PARITY")!=NULL){
+    printf("PARITY BuildStatCostsDefo: total_arcs=%ld masked=%ld low_corr=%ld defocorrthresh=%.6f kperpdpsi=%ld kpardpsi=%ld\n",
+           totalcount,maskedcount,lowcorrcount,defocorrthresh,kperpdpsi,kpardpsi);
+    fflush(stdout);
+  }
 
   /* return pointer to costs arrays */
   return((void **)costs);

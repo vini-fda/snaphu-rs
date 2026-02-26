@@ -124,6 +124,7 @@ The slash command `/translate_function [function_name]` will help translate a SN
    - ✅ Native multi-tile secondary-network optimization is now active: tiles trace deterministic cross-boundary secondary arcs into a shared graph, normalize arc costs, solve global secondary flows, map solved arc flows back per tile, and apply parsed secondary-flow corrections during assembly (replacing the previous stubbed empty-graph/empty-flow path).
    - ✅ Multi-tile follow-up optimizations landed: reusable worker-local extraction buffers (`mag`/`wrapped`/`power`/`correlation`), stricter seam-length validation (no silent truncation), safer tile-window bounds checks, and verbose per-stage timing for profiling.
    - ✅ Native multi-tile path now supports `DOTILEMASKFILE`: config parsing/wiring is in place, tile masks are loaded via `set_up_do_tile_mask`, and masked tiles bypass unwrap while still producing deterministic assembled output.
+   - ✅ Added a C/Rust parity-debug pass for 600x600 Kumamoto runs: extra DEFO/SMOOTH config knobs are now parsed, cost construction and CS2 graph mapping were aligned with C conventions, and both binaries can emit stage-level debug counters for side-by-side diagnostics.
    - ⏳ Full CLI parity is still pending (legacy remains default, and native path currently scopes to single/multi-tile non-quantify workflows).
 
 While translating each CSV-priority batch, update the spreadsheet (or a markdown checklist) with statuses so we know which functions remain.

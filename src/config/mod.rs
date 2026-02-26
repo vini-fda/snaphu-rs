@@ -122,6 +122,21 @@ pub struct RunConfig {
     pub dr: f64,
     pub da: f64,
     pub lambda: f64,
+    pub rhosconst1: f64,
+    pub rhosconst2: f64,
+    pub cstd1: f64,
+    pub cstd2: f64,
+    pub cstd3: f64,
+    pub defothreshfactor: f64,
+    pub defomax: f64,
+    pub sigsqcorr: f64,
+    pub costscale: f64,
+    pub defolayconst: f64,
+    pub sigsqshortmin: i64,
+    pub kperpdpsi: usize,
+    pub kpardpsi: usize,
+    pub maxcost: i64,
+    pub layfalloffconst: i64,
     pub nshortcycle: i64,
     pub maxflow: i64,
     pub scndry_arc_flow_max: usize,
@@ -173,6 +188,21 @@ impl Default for RunConfig {
             dr: 8.0,
             da: 20.0,
             lambda: 0.056_564_7,
+            rhosconst1: 1.3,
+            rhosconst2: 0.14,
+            cstd1: 0.4,
+            cstd2: 0.35,
+            cstd3: 0.06,
+            defothreshfactor: 1.2,
+            defomax: 1.2,
+            sigsqcorr: 0.05,
+            costscale: 100.0,
+            defolayconst: 0.9,
+            sigsqshortmin: 1,
+            kperpdpsi: 7,
+            kpardpsi: 7,
+            maxcost: 1000,
+            layfalloffconst: 2,
             nshortcycle: 200,
             maxflow: 4,
             scndry_arc_flow_max: 8,
@@ -252,6 +282,16 @@ pub fn apply_config_entries(
             "INFILE" => infiles.infile = entry.value.clone(),
 
             // Output files
+            "INITFILE" => outfiles.initfile = entry.value.clone(),
+            "FLOWFILE" => outfiles.flowfile = entry.value.clone(),
+            "EIFILE" => outfiles.eifile = entry.value.clone(),
+            "ROWCOSTFILE" => outfiles.rowcostfile = entry.value.clone(),
+            "COLCOSTFILE" => outfiles.colcostfile = entry.value.clone(),
+            "MSTROWCOSTFILE" => outfiles.mstrowcostfile = entry.value.clone(),
+            "MSTCOLCOSTFILE" => outfiles.mstcolcostfile = entry.value.clone(),
+            "MSTCOSTSFILE" => outfiles.mstcostsfile = entry.value.clone(),
+            "CORRDUMPFILE" => outfiles.corrdumpfile = entry.value.clone(),
+            "RAWCORRDUMPFILE" => outfiles.rawcorrdumpfile = entry.value.clone(),
             "OUTFILE" => outfiles.outfile = entry.value.clone(),
             "LOGFILE" => outfiles.logfile = entry.value.clone(),
             "COSTOUTFILE" => outfiles.costoutfile = entry.value.clone(),
@@ -323,6 +363,81 @@ pub fn apply_config_entries(
             "LAMBDA" => {
                 if let Some(v) = string_to_double(&entry.value) {
                     params.lambda = v;
+                }
+            }
+            "RHOSCONST1" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.rhosconst1 = v;
+                }
+            }
+            "RHOSCONST2" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.rhosconst2 = v;
+                }
+            }
+            "CSTD1" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.cstd1 = v;
+                }
+            }
+            "CSTD2" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.cstd2 = v;
+                }
+            }
+            "CSTD3" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.cstd3 = v;
+                }
+            }
+            "DEFOTHRESHFACTOR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.defothreshfactor = v;
+                }
+            }
+            "DEFOMAX_CYCLE" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.defomax = v;
+                }
+            }
+            "SIGSQCORR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.sigsqcorr = v;
+                }
+            }
+            "COSTSCALE" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.costscale = v;
+                }
+            }
+            "DEFOLAYCONST" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.defolayconst = v;
+                }
+            }
+            "SIGSQSHORTMIN" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.sigsqshortmin = v;
+                }
+            }
+            "KPERPDPSI" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.kperpdpsi = v as usize;
+                }
+            }
+            "KPARDPSI" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.kpardpsi = v as usize;
+                }
+            }
+            "MAXCOST" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.maxcost = v;
+                }
+            }
+            "LAYFALLOFFCONST" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.layfalloffconst = v;
                 }
             }
             "NCORRLOOKS" => {
@@ -454,6 +569,38 @@ pub fn check_params(
     }
     if params.lambda <= 0.0 {
         return Err(CheckParamsError::InvalidPositiveParam("lambda"));
+    }
+    if params.maxcost <= 0 {
+        return Err(CheckParamsError::InvalidPositiveParam("maxcost"));
+    }
+    if params.sigsqshortmin <= 0 {
+        return Err(CheckParamsError::InvalidPositiveParam("sigsqshortmin"));
+    }
+    if !params.defothreshfactor.is_finite() || params.defothreshfactor <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("defothreshfactor"));
+    }
+    if !params.defomax.is_finite() || params.defomax <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("defomax"));
+    }
+    if !params.sigsqcorr.is_finite() || params.sigsqcorr < 0.0 {
+        return Err(CheckParamsError::InvalidRange("sigsqcorr"));
+    }
+    if !params.costscale.is_finite() || params.costscale <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("costscale"));
+    }
+    if !params.defolayconst.is_finite() || params.defolayconst <= 0.0 || params.defolayconst >= 1.0
+    {
+        return Err(CheckParamsError::InvalidRange("defolayconst"));
+    }
+    if params.kperpdpsi == 0
+        || params.kpardpsi == 0
+        || params.kperpdpsi.is_multiple_of(2)
+        || params.kpardpsi.is_multiple_of(2)
+    {
+        return Err(CheckParamsError::InvalidRange("kperpdpsi/kpardpsi"));
+    }
+    if params.layfalloffconst <= 0 {
+        return Err(CheckParamsError::InvalidPositiveParam("layfalloffconst"));
     }
     if params.nshortcycle < 1 || params.nshortcycle > 8192 {
         return Err(CheckParamsError::InvalidRange("nshortcycle"));

@@ -252,6 +252,38 @@ pub fn unwrap_tile(
             .collect()
     } else {
         let residue = cycle_residue_2d(params.wrapped_phase, nrow, ncol)?;
+        if log::log_enabled!(log::Level::Debug) {
+            let mut pos = 0usize;
+            let mut neg = 0usize;
+            let mut zero = 0usize;
+            let mut sum = 0i64;
+            for row in &residue {
+                for &v in row {
+                    let vi = i64::from(v);
+                    sum += vi;
+                    if v > 0 {
+                        pos += 1;
+                    } else if v < 0 {
+                        neg += 1;
+                    } else {
+                        zero += 1;
+                    }
+                }
+            }
+            log::debug!(
+                "unwrap_tile init={} nrow={} ncol={} residue(pos={}, neg={}, zero={}, sum={})",
+                match config.init_method {
+                    crate::config::InitMethod::Mst => "mst",
+                    crate::config::InitMethod::Mcf => "mcf",
+                },
+                nrow,
+                ncol,
+                pos,
+                neg,
+                zero,
+                sum
+            );
+        }
         match config.init_method {
             crate::config::InitMethod::Mst => {
                 solve_mst(SolveMstParams {

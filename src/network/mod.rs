@@ -8,7 +8,6 @@ use crate::constants::{GROUNDROW, LARGE_SHORT, MASKED};
 use crate::costs::types::{Cost, IncrCost};
 use crate::data::ops::{cycle_residue, l_round, node_residue, short_2d_row_col_abs_max};
 use cost_scaling_rs::McmfCs2;
-use std::collections::{HashMap, VecDeque};
 
 pub struct TileGraph;
 
@@ -2094,13 +2093,6 @@ pub struct TreeSolveResult {
 ///
 /// This is the typed Rust equivalent of C `SolveCS2()`.
 pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCostError> {
-    #[derive(Debug, Clone, Copy)]
-    struct ArcPlacement {
-        arcrow: usize,
-        arccol: usize,
-        sign: i64,
-    }
-
     if params.nrow < 2 || params.ncol < 2 {
         return Err(NetworkCostError::InvalidNetworkDims {
             nrow: params.nrow,
@@ -2110,71 +2102,165 @@ pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCos
     validate_residue_dims(params.residue, params.nrow, params.ncol).map_err(convert_data_error)?;
     validate_flow_dims(params.mst_costs, params.nrow, params.ncol).map_err(convert_data_error)?;
     let _scale = params.cs2_scale_factor;
+    let debug_enabled = log::log_enabled!(log::Level::Debug);
+
+    if debug_enabled {
+        let mut residue_pos = 0usize;
+        let mut residue_neg = 0usize;
+        let mut residue_zero = 0usize;
+        let mut residue_sum = 0i64;
+        let mut residue_abs_sum = 0i64;
+        for row in params.residue {
+            for &v in row {
+                let vi = i64::from(v);
+                residue_sum += vi;
+                residue_abs_sum += vi.unsigned_abs() as i64;
+                if v > 0 {
+                    residue_pos += 1;
+                } else if v < 0 {
+                    residue_neg += 1;
+                } else {
+                    residue_zero += 1;
+                }
+            }
+        }
+
+        let mut cost_min = i16::MAX;
+        let mut cost_max = i16::MIN;
+        let mut cost_sum = 0i64;
+        let mut cost_zero = 0usize;
+        let mut cost_count = 0usize;
+        for row in params.mst_costs {
+            for &c in row {
+                cost_min = cost_min.min(c);
+                cost_max = cost_max.max(c);
+                cost_sum += i64::from(c);
+                if c == 0 {
+                    cost_zero += 1;
+                }
+                cost_count += 1;
+            }
+        }
+        let cost_mean = if cost_count == 0 {
+            0.0
+        } else {
+            cost_sum as f64 / cost_count as f64
+        };
+
+        log::debug!(
+            "solve_cs2 begin: nrow={}, ncol={}, scale_factor={}, residue(pos={}, neg={}, zero={}, sum={}, abs_sum={}), mst_costs(count={}, min={}, max={}, mean={:.3}, zero={})",
+            params.nrow,
+            params.ncol,
+            params.cs2_scale_factor,
+            residue_pos,
+            residue_neg,
+            residue_zero,
+            residue_sum,
+            residue_abs_sum,
+            cost_count,
+            cost_min,
+            cost_max,
+            cost_mean,
+            cost_zero
+        );
+    }
 
     let residue_rows = params.nrow - 1;
     let residue_cols = params.ncol - 1;
     let ground_id = residue_rows * residue_cols + 1;
     let narcs = (params.nrow - 1) * params.ncol + params.nrow * (params.ncol - 1);
+    const ARC_UBOUND: i64 = 200;
     let mut solver = McmfCs2::new(ground_id, 2 * narcs);
 
-    let node_id = |row: usize, col: usize| -> usize { row * residue_cols + col + 1 };
+    let node_id = |row: usize, col: usize| -> usize { col * residue_rows + row + 1 };
 
     let mut ground_supply = 0i64;
-    for row in 0..residue_rows {
-        for col in 0..residue_cols {
-            // With this arc orientation, node balance is out-in = -residue.
-            let supply = -i64::from(params.residue[row][col]);
+    for col in 0..residue_cols {
+        for row in 0..residue_rows {
+            let supply = i64::from(params.residue[row][col]);
             ground_supply -= supply;
             solver.set_supply_demand_of_node(node_id(row, col), supply);
         }
     }
     solver.set_supply_demand_of_node(ground_id, ground_supply);
 
-    let mut arc_placement = HashMap::<(usize, usize), VecDeque<ArcPlacement>>::new();
-    let mut register_arc =
-        |tail: usize, head: usize, arcrow: usize, arccol: usize, sign: i64, cost: i64| {
-            solver.set_arc(tail, head, 0, i64::from(LARGE_SHORT), cost);
-            arc_placement
-                .entry((tail, head))
-                .or_default()
-                .push_back(ArcPlacement {
-                    arcrow,
-                    arccol,
-                    sign,
-                });
-        };
-
-    for arcrow in 0..(2 * params.nrow - 1) {
-        let maxcol = if arcrow < params.nrow - 1 {
-            params.ncol
-        } else {
-            params.ncol - 1
-        };
-        for arccol in 0..maxcol {
-            let cost = i64::from(params.mst_costs[arcrow][arccol]);
-            let (tail, head) = if arcrow < params.nrow - 1 {
-                let row = arcrow;
-                if arccol == 0 {
-                    (ground_id, node_id(row, 0))
-                } else if arccol == params.ncol - 1 {
-                    (node_id(row, residue_cols - 1), ground_id)
-                } else {
-                    (node_id(row, arccol - 1), node_id(row, arccol))
-                }
+    let mut arc_pairs_ground = 0usize;
+    let mut arc_pairs_row_internal = 0usize;
+    let mut arc_pairs_col_internal = 0usize;
+    let row_arc_count = residue_rows * params.ncol;
+    for arcctr in 1..=narcs {
+        let (tail0, head0, arcrow, _arccol, cost) = if arcctr <= row_arc_count {
+            let nodectr = arcctr;
+            let tail = if nodectr <= residue_rows * residue_cols {
+                nodectr
             } else {
-                let row = arcrow - (params.nrow - 1);
-                if row == 0 {
-                    (ground_id, node_id(0, arccol))
-                } else if row == params.nrow - 1 {
-                    (node_id(residue_rows - 1, arccol), ground_id)
-                } else {
-                    (node_id(row - 1, arccol), node_id(row, arccol))
-                }
+                ground_id
             };
+            let head = if nodectr <= residue_rows {
+                ground_id
+            } else {
+                nodectr - residue_rows
+            };
+            let arcrow = (nodectr - 1) % residue_rows;
+            let arccol = (nodectr - 1) / residue_rows;
+            (
+                tail,
+                head,
+                arcrow,
+                arccol,
+                i64::from(params.mst_costs[arcrow][arccol]),
+            )
+        } else {
+            let nodectr = arcctr - row_arc_count;
+            let denom = residue_rows + 1;
+            let ceil_div = nodectr.div_ceil(denom);
+            let tail = if nodectr % denom == 0 {
+                ground_id
+            } else {
+                nodectr - ceil_div + 1
+            };
+            let head = if nodectr % denom == 1 {
+                ground_id
+            } else {
+                nodectr - ceil_div
+            };
+            let arcrow = params.nrow - 1 + ((nodectr - 1) % denom);
+            let arccol = (nodectr - 1) / denom;
+            (
+                tail,
+                head,
+                arcrow,
+                arccol,
+                i64::from(params.mst_costs[arcrow][arccol]),
+            )
+        };
 
-            register_arc(tail, head, arcrow, arccol, 1, cost);
-            register_arc(head, tail, arcrow, arccol, -1, cost);
+        if tail0 == ground_id || head0 == ground_id {
+            arc_pairs_ground += 1;
+        } else if arcrow < params.nrow - 1 {
+            arc_pairs_row_internal += 1;
+        } else {
+            arc_pairs_col_internal += 1;
         }
+
+        let mut tail = tail0;
+        let mut head = head0;
+        for _ in 0..2 {
+            solver.set_arc(tail, head, 0, ARC_UBOUND, cost);
+            std::mem::swap(&mut tail, &mut head);
+        }
+    }
+
+    if debug_enabled {
+        log::debug!(
+            "solve_cs2 network: nodes={} (including ground), undirected_arc_pairs={} (ground={}, row_internal={}, col_internal={}), directed_arcs={}",
+            ground_id,
+            narcs,
+            arc_pairs_ground,
+            arc_pairs_row_internal,
+            arc_pairs_col_internal,
+            2 * narcs
+        );
     }
 
     let solution = solver
@@ -2183,23 +2269,135 @@ pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCos
 
     let widths = flow_row_lengths(params.nrow, params.ncol);
     let mut flows: Vec<Vec<i16>> = widths.iter().map(|&w| vec![0i16; w]).collect();
-    for (tail, head, flow) in solution.flows() {
+    let mut add_flow = |arcrow: usize, arccol: usize, delta: i64| -> Result<(), NetworkCostError> {
+        let value = i64::from(flows[arcrow][arccol]).saturating_add(delta);
+        flows[arcrow][arccol] = i16::try_from(value).map_err(|_| {
+            NetworkCostError::NetworkDataFailure(NetworkDataError::FlowOutOfRange { value })
+        })?;
+        Ok(())
+    };
+
+    for (mut from, mut to, flow) in solution.flows() {
         if flow <= 0 {
             continue;
         }
-        let Some(queue) = arc_placement.get_mut(&(tail, head)) else {
-            return Err(NetworkCostError::SolverArcMappingMissing { tail, head });
-        };
-        let Some(placement) = queue.pop_front() else {
-            return Err(NetworkCostError::SolverArcMappingMissing { tail, head });
-        };
+        let mut f = flow;
 
-        let flow_i64 = flow;
-        let value = i64::from(flows[placement.arcrow][placement.arccol])
-            .saturating_add(placement.sign.saturating_mul(flow_i64));
-        flows[placement.arcrow][placement.arccol] = i16::try_from(value).map_err(|_| {
-            NetworkCostError::NetworkDataFailure(NetworkDataError::FlowOutOfRange { value })
-        })?;
+        if from == ground_id || to == ground_id {
+            if to == ground_id {
+                std::mem::swap(&mut from, &mut to);
+                f = -f;
+            }
+            if (to - 1) % residue_rows == 0 {
+                let c = (to - 1) / residue_rows;
+                add_flow(params.nrow - 1, c, f)?;
+            } else if to <= residue_rows {
+                add_flow(to - 1, 0, f)?;
+            } else if to >= (ground_id - residue_rows - 1) {
+                let r = (to - 1) % residue_rows;
+                add_flow(r, residue_cols, -f)?;
+            } else if to % residue_rows == 0 {
+                let c = to / residue_rows - 1;
+                add_flow(params.nrow - 1 + residue_rows, c, -f)?;
+            } else {
+                return Err(NetworkCostError::SolverArcMappingMissing {
+                    tail: from,
+                    head: to,
+                });
+            }
+        } else if from == to + 1 {
+            let num = from + (from - 1) / residue_rows;
+            let arcrow = params.nrow - 1 + (num - 1) % (residue_rows + 1);
+            let arccol = (num - 1) / (residue_rows + 1);
+            add_flow(arcrow, arccol, -f)?;
+        } else if from + 1 == to {
+            let num = from + (from - 1) / residue_rows + 1;
+            let arcrow = params.nrow - 1 + (num - 1) % (residue_rows + 1);
+            let arccol = (num - 1) / (residue_rows + 1);
+            add_flow(arcrow, arccol, f)?;
+        } else if from + residue_rows == to {
+            let num = from + residue_rows;
+            let arcrow = (num - 1) % residue_rows;
+            let arccol = (num - 1) / residue_rows;
+            add_flow(arcrow, arccol, f)?;
+        } else if from == to + residue_rows {
+            let num = from;
+            let arcrow = (num - 1) % residue_rows;
+            let arccol = (num - 1) / residue_rows;
+            add_flow(arcrow, arccol, -f)?;
+        } else {
+            return Err(NetworkCostError::SolverArcMappingMissing {
+                tail: from,
+                head: to,
+            });
+        }
+    }
+
+    if debug_enabled {
+        let mut flow_nonzero = 0usize;
+        let mut flow_abs_sum = 0i64;
+        let mut flow_min = i16::MAX;
+        let mut flow_max = i16::MIN;
+        let mut row_nonzero = 0usize;
+        let mut col_nonzero = 0usize;
+        let mut objective_abs = 0i64;
+
+        for arcrow in 0..flows.len() {
+            for arccol in 0..flows[arcrow].len() {
+                let f = flows[arcrow][arccol];
+                if f != 0 {
+                    flow_nonzero += 1;
+                    if arcrow < params.nrow - 1 {
+                        row_nonzero += 1;
+                    } else {
+                        col_nonzero += 1;
+                    }
+                }
+                flow_abs_sum += i64::from(f).unsigned_abs() as i64;
+                flow_min = flow_min.min(f);
+                flow_max = flow_max.max(f);
+                objective_abs += i64::from(f).unsigned_abs() as i64
+                    * i64::from(params.mst_costs[arcrow][arccol]).unsigned_abs() as i64;
+            }
+        }
+
+        let mut residue_mismatch_count = 0usize;
+        let mut residue_mismatch_max_abs = 0i64;
+        let mut residue_mismatch_sum_abs = 0i64;
+        for row in 0..(params.nrow - 1) {
+            for col in 0..(params.ncol - 1) {
+                let row_left = i64::from(flows[row][col]);
+                let row_right = i64::from(flows[row][col + 1]);
+                let col_top = i64::from(flows[params.nrow - 1 + row][col]);
+                let col_bottom = i64::from(flows[params.nrow - 1 + row + 1][col]);
+                let calc_residue = row_left + col_top - row_right - col_bottom;
+                let input_residue = i64::from(params.residue[row][col]);
+                let delta = calc_residue - input_residue;
+                if delta != 0 {
+                    residue_mismatch_count += 1;
+                    let d = delta.unsigned_abs() as i64;
+                    residue_mismatch_sum_abs += d;
+                    residue_mismatch_max_abs = residue_mismatch_max_abs.max(d);
+                }
+            }
+        }
+
+        log::debug!(
+            "solve_cs2 flow summary: nonzero={} (row={}, col={}), abs_sum={}, min={}, max={}, abs_objective={}",
+            flow_nonzero,
+            row_nonzero,
+            col_nonzero,
+            flow_abs_sum,
+            flow_min,
+            flow_max,
+            objective_abs
+        );
+        log::debug!(
+            "solve_cs2 residue closure: mismatch_count={}, mismatch_max_abs={}, mismatch_sum_abs={}",
+            residue_mismatch_count,
+            residue_mismatch_max_abs,
+            residue_mismatch_sum_abs
+        );
     }
 
     Ok(flows)

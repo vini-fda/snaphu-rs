@@ -69,7 +69,9 @@ where
         MagnitudeFileFormat, RasterFileFormat, TileWindow, get_n_lines, read_byte_mask,
         read_correlation, read_input_file, read_intensity, read_magnitude, set_up_do_tile_mask,
     };
-    use crate::io::writer::{OutputFileFormat, write_output_file};
+    use crate::io::writer::{
+        OutputFileFormat, write_2d_array, write_2d_row_col_array, write_output_file,
+    };
     use crate::unwrapping::flow::{UnwrapTileParams, unwrap_tile};
     use std::io;
     use std::path::{Path, PathBuf};
@@ -202,6 +204,43 @@ options:
             out.extend_from_slice(&flows[row]);
         }
         Ok(out)
+    }
+
+    fn row_col_to_rasters_i16(
+        values: &[Vec<i16>],
+        nrow: usize,
+        ncol: usize,
+    ) -> io::Result<(Raster<i16>, Raster<i16>)> {
+        let widths = row_col_widths(nrow, ncol);
+        if values.len() != widths.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "row/col row count mismatch",
+            ));
+        }
+
+        let mut row_data = Vec::with_capacity((nrow - 1) * ncol);
+        let mut col_data = Vec::with_capacity(nrow * (ncol - 1));
+        for (row, &width) in widths.iter().enumerate() {
+            if values[row].len() != width {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "row/col width mismatch at row {row}: got {}, expected {width}",
+                        values[row].len()
+                    ),
+                ));
+            }
+            if row < nrow - 1 {
+                row_data.extend_from_slice(&values[row]);
+            } else {
+                col_data.extend_from_slice(&values[row]);
+            }
+        }
+        Ok((
+            Raster::new(ncol, nrow - 1, row_data),
+            Raster::new(ncol - 1, nrow, col_data),
+        ))
     }
 
     let raw_args = _args
@@ -465,6 +504,41 @@ options:
             window.ncol,
         );
         let unwrapped = Raster::new(window.ncol, window.nrow, unwrapped_phase);
+
+        if !outfiles.flowfile.is_empty() {
+            let (row_arcs, col_arcs) =
+                row_col_to_rasters_i16(&out.flows, window.nrow, window.ncol)?;
+            let real = write_2d_row_col_array(&row_arcs, &col_arcs, Path::new(&outfiles.flowfile))?;
+            log::debug!(
+                "native Rust wrote FLOWFILE {} (requested {})",
+                real.display(),
+                outfiles.flowfile
+            );
+        }
+        if !outfiles.mstcostsfile.is_empty() {
+            let (row_arcs, col_arcs) =
+                row_col_to_rasters_i16(&out.cost_arrays.mst_costs, window.nrow, window.ncol)?;
+            let real =
+                write_2d_row_col_array(&row_arcs, &col_arcs, Path::new(&outfiles.mstcostsfile))?;
+            log::debug!(
+                "native Rust wrote MSTCOSTSFILE {} (requested {})",
+                real.display(),
+                outfiles.mstcostsfile
+            );
+        }
+        if !outfiles.initfile.is_empty() {
+            let real = write_2d_array(
+                &unwrapped.data,
+                window.nrow,
+                window.ncol,
+                Path::new(&outfiles.initfile),
+            )?;
+            log::debug!(
+                "native Rust wrote INITFILE {} (requested {})",
+                real.display(),
+                outfiles.initfile
+            );
+        }
 
         let _written = write_output_file(
             &input.mag,
