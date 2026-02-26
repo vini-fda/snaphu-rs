@@ -19,7 +19,7 @@ Optionally, it also runs the original `snaphu` binary so we can capture referenc
 ```
 cargo run --example complex_writer -- \
     --out-dir target/examples/complex_writer \
-    --snaphu-bin /path/to/snaphu \
+    --snaphu-bin snaphu_original/snaphu \
     --rerun --write-png
 ```
 
