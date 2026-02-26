@@ -133,7 +133,7 @@ fn fill_tile_window(
     }
 
     out.resize_with(region.rows, Vec::new);
-    for r in 0..region.rows {
+    for (r, out_r) in out.iter_mut().enumerate() {
         let src_row = region.first_row + r;
         let row = &scene[src_row];
         let start = region.first_col;
@@ -150,8 +150,8 @@ fn fill_tile_window(
                 ),
             ));
         }
-        out[r].resize(region.cols, 0.0);
-        out[r].copy_from_slice(&row[start..end]);
+        out_r.resize(region.cols, 0.0);
+        out_r.copy_from_slice(&row[start..end]);
     }
     Ok(())
 }

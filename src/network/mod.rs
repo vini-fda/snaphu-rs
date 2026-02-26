@@ -2214,7 +2214,7 @@ pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCos
             let nodectr = arcctr - row_arc_count;
             let denom = residue_rows + 1;
             let ceil_div = nodectr.div_ceil(denom);
-            let tail = if nodectr % denom == 0 {
+            let tail = if nodectr.is_multiple_of(denom) {
                 ground_id
             } else {
                 nodectr - ceil_div + 1
@@ -2342,9 +2342,8 @@ pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCos
         let mut col_nonzero = 0usize;
         let mut objective_abs = 0i64;
 
-        for arcrow in 0..flows.len() {
-            for arccol in 0..flows[arcrow].len() {
-                let f = flows[arcrow][arccol];
+        for (arcrow, flow_row) in flows.iter().enumerate() {
+            for (arccol, &f) in flow_row.iter().enumerate() {
                 if f != 0 {
                     flow_nonzero += 1;
                     if arcrow < params.nrow - 1 {
