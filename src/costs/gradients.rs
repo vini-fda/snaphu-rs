@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Wrapped-phase gradient builders used by the statistical cost terms.
 
 use crate::constants::TWO_PI;

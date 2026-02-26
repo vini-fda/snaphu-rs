@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Lookup table builders for rho/dz statistics.
 
 use crate::constants::{BIGGEST_DZ_RHO_MAX, LARGE_FLOAT, MAX_ITERATIONS, SQRT_HALF};

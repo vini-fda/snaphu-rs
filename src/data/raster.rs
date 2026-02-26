@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Basic raster representation for interferogram grids.
 
 #[derive(Debug, Clone)]

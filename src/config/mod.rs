@@ -1,8 +1,4 @@
-#![allow(dead_code)]
-
 //! Configuration types for running SNAPHU.
-
-pub mod defaults;
 
 use core::ffi::c_long;
 use std::fs::File;

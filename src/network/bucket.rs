@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Safe helpers mirroring the legacy bucket queue utilities.
 
 use std::fmt;

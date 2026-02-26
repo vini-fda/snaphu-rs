@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Shared cost record structs translated from the SNAPHU leaf types.
 
 use crate::constants::LARGE_SHORT;

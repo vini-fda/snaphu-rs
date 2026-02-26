@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Network graph construction and solver wrappers.
 
 pub mod bucket;

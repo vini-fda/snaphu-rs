@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Standalone numeric helpers translated from the SNAPHU leaf utilities.
 
 use crate::constants::{ARMLEN, LARGE_SHORT, LARGE_SHORT_I32, NARMS, PI, TWO_PI};

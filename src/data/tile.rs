@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Per-tile metadata structures.
 
 #[derive(Debug, Clone, Default)]

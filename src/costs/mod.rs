@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Cost calculation traits and helpers.
 
 use crate::config::{CostMode, RunConfig};

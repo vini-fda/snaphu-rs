@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! File-reading helpers for rasters and metadata.
 
 use crate::constants::{LARGE_SHORT, TWO_PI_F32};

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Output helpers for unwrapped phase products.
 
 use crate::costs::types::IncrCost;
