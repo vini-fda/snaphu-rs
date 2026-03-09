@@ -60,7 +60,7 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
 ## Testing & Validation Strategy
 - **Golden fixtures**: Capture small interferogram tiles + expected unwrap outputs from the C binary. Re-run after each major module to prevent drift.
 - **Property tests**: For cost calculators and lookup tables, assert monotonicity, ranges, and invariants mirrored from SNAPHU docs.
-- **Example-driven datasets**: Use `cargo run --example complex_writer` to regenerate wrapped interferograms on demand, collect the resulting `.bin` / `.out` files, and compare SNAPHU vs SNAPHU-rs outputs to refresh fixtures whenever upstream logic evolves.
+- **Example-driven datasets**: Use the kumamoto dataset with the corresponding full end to end comparison test in `tests/kumamoto.rs` as a validation.
 
 ## Risk & Mitigation
 - **Global-state coupling**: Some functions rely on implicit writes; when translating, add temporary logging to the C version to trace which globals each function touches.
