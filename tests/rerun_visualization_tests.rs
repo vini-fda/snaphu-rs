@@ -2,7 +2,7 @@
 //!
 //! Run with:
 //!   rerun
-//!   cargo test --features rerun --test rerun_visualization_tests -- --ignored --nocapture
+//!   cargo test --release --features rerun --test rerun_visualization_tests -- --ignored --nocapture
 
 #![cfg(feature = "rerun")]
 

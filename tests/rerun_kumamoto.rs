@@ -2,7 +2,7 @@
 //!
 //! Run with:
 //!   rerun
-//!   cargo test --features rerun --test rerun_kumamoto -- --ignored --nocapture
+//!   cargo test --release --features rerun --test rerun_kumamoto -- --ignored --nocapture
 
 #![cfg(feature = "rerun")]
 
