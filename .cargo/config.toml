@@ -1,2 +1,7 @@
 [net]
 git-fetch-with-cli = true
+
+# For native builds (enables AVX2, SSE4, etc. if available)
+# Not recommended for distributed binaries, hurts portability
+[build]
+rustflags = ["-C", "target-cpu=native"]

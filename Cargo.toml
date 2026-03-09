@@ -22,6 +22,19 @@ cost_scaling_rs = { package = "cost-scaling-rs", git = "https://github.com/vini-
 clap = { version = "4.5.20", features = ["derive"] }
 rerun = { version = "0.30.1", default-features = false, features = ["sdk"], optional = true }
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Dedicated profile for performance analysis
+# with profiling tools
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = 2
+
 [[bin]]
 name = "snaphu"
 path = "src/bin/snaphu.rs"
