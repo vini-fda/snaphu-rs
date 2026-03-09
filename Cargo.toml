@@ -28,6 +28,13 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# Dedicated profile for performance analysis
+# with profiling tools
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = 2
+
 [[bin]]
 name = "snaphu"
 path = "src/bin/snaphu.rs"
