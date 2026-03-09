@@ -3,6 +3,9 @@
 //! Run with:
 //!   rerun
 //!   cargo test --release --features rerun --test rerun_kumamoto -- --ignored --nocapture
+//!
+//! To run only a particular test:
+//!   cargo test --release --features rerun --test rerun_kumamoto rerun_kumamoto_as_tensor -- --ignored --nocapture
 
 #![cfg(feature = "rerun")]
 
@@ -74,11 +77,43 @@ fn rr_phase(phase: &[f32], width: usize, height: usize) -> Image {
 }
 
 fn load_case_outputs() -> Result<KumamotoOutputs, Box<dyn Error>> {
-    let case = KUMAMOTO_CASES[1];
+    let case = KUMAMOTO_CASES[2];
     if let Err(reason) = kumamoto::can_run_case(case) {
         return Err(io::Error::other(format!("cannot run {}: {reason}", case.name)).into());
     }
     kumamoto::run_case(case)
+}
+
+fn log_kumamoto_tensor_outputs(
+    rr: &RecordingStream,
+    out: &KumamotoOutputs,
+) -> Result<(), Box<dyn Error>> {
+    let width = out.case.width;
+    let height = out.case.height;
+
+    log_phase_tensor(
+        rr,
+        "kumamoto/coherence_tensor",
+        &out.coherence,
+        width,
+        height,
+    )?;
+    log_phase_tensor(rr, "kumamoto/wrapped_tensor", &out.wrapped, width, height)?;
+    log_phase_tensor(
+        rr,
+        "kumamoto/unwrapped_c_tensor",
+        &out.c_unwrapped,
+        width,
+        height,
+    )?;
+    log_phase_tensor(
+        rr,
+        "kumamoto/unwrapped_snaphu_rs_tensor",
+        &out.rs_unwrapped,
+        width,
+        height,
+    )?;
+    Ok(())
 }
 
 #[test]
@@ -86,24 +121,7 @@ fn load_case_outputs() -> Result<KumamotoOutputs, Box<dyn Error>> {
 fn rerun_kumamoto_as_tensor() -> Result<(), Box<dyn Error>> {
     let out = load_case_outputs()?;
     let rr = connect_rerun("rerun_kumamoto_tensor")?;
-    let width = out.case.width;
-    let height = out.case.height;
-
-    log_phase_tensor(&rr, "kumamoto/wrapped_tensor", &out.wrapped, width, height)?;
-    log_phase_tensor(
-        &rr,
-        "kumamoto/unwrapped_c_tensor",
-        &out.c_unwrapped,
-        width,
-        height,
-    )?;
-    log_phase_tensor(
-        &rr,
-        "kumamoto/unwrapped_snaphu_rs_tensor",
-        &out.rs_unwrapped,
-        width,
-        height,
-    )?;
+    log_kumamoto_tensor_outputs(&rr, &out)?;
     Ok(())
 }
 
