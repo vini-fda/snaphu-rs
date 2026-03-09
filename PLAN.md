@@ -141,13 +141,6 @@ While translating each CSV-priority batch, update the spreadsheet (or a markdown
 - **Floating-point drift**: Document acceptable tolerances per module; prefer `f64` for accumulators even if C used double.
 - **CS2 parity**: `cost_scaling_rs` may expose different tuning knobs; add adapter layer to emulate SNAPHU defaults and keep integration tests focused on network outputs instead of internal solver steps.
 
-## Verification Snapshot (2026-02-22)
-- `just translation_plan --status EMPTY` => no rows.
-- `just translation_plan --status DONE` => 173 rows.
-- `just translation_plan --status NOT_PLANNED` => 17 rows (deferred low-level allocator/CS2 internals).
-- `cargo test --no-default-features` passes (native CLI smoke tests included).
-- `Cargo.toml` includes `cost_scaling_rs` (package `cost-scaling-rs`) and `solve_cs2` is backed by the solver integration.
-
 ## Definition of Done
 1. `cargo test --no-default-features` passes with only the idiomatic Rust implementation.
 2. CLI arguments, config file semantics, and output formats match the original binary (validated via regression suite).
