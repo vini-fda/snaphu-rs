@@ -1,0 +1,2 @@
+testcases/**/*.snaphu.img filter=lfs diff=lfs merge=lfs -text
+testcases/**/*.img filter=lfs diff=lfs merge=lfs -text

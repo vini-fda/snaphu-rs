@@ -12,6 +12,20 @@ readme = "README.md"
 keywords = ["snaphu", "insar", "sar"]
 categories = ["science", "mathematics"]
 
+[features]
+rerun = ["dep:rerun"]
+
 [dependencies]
-snaphu-sys = "0.1.2"
-libc = "0.2"
+log = "0.4.29"
+env_logger = "0.11.8"
+cost_scaling_rs = { package = "cost-scaling-rs", git = "https://github.com/vini-fda/cost_scaling_rs.git", branch = "master" }
+clap = { version = "4.5.20", features = ["derive"] }
+rerun = { version = "0.30.1", default-features = false, features = ["sdk"], optional = true }
+
+[[bin]]
+name = "snaphu"
+path = "src/bin/snaphu.rs"
+
+[[example]]
+name = "phase_viewer"
+required-features = ["rerun"]

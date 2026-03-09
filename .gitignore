@@ -3,3 +3,7 @@ Cargo.lock
 .DS_Store
 .AppleDouble
 .LSOverride
+*.out
+*.bin
+*.venv
+snaphu_input
