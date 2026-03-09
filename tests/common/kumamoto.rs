@@ -41,6 +41,7 @@ impl KumamotoCase {
 pub struct KumamotoOutputs {
     pub case: KumamotoCase,
     pub wrapped: Vec<f32>,
+    pub coherence: Vec<f32>,
     pub c_unwrapped: Vec<f32>,
     pub rs_unwrapped: Vec<f32>,
 }
@@ -169,12 +170,14 @@ pub fn run_case(case: KumamotoCase) -> Result<KumamotoOutputs, Box<dyn Error>> {
     snaphu_rs::run_cli(args)?;
 
     let wrapped = read_f32_raster(&tmp_dir.join(PHASE_FILE), case.width, case.height)?;
+    let coherence = read_f32_raster(&tmp_dir.join(COH_FILE), case.width, case.height)?;
     let c_unwrapped = read_f32_raster(&c_out, case.width, case.height)?;
     let rs_unwrapped = read_f32_raster(&rs_out, case.width, case.height)?;
 
     Ok(KumamotoOutputs {
         case,
         wrapped,
+        coherence,
         c_unwrapped,
         rs_unwrapped,
     })
