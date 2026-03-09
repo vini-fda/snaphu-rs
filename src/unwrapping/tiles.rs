@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 const LARGE_INT: i64 = 2_000_000_000;
 const ZERO_COST_ARC: i64 = -LARGE_INT;
 const MAX_OFFSET_REFINEMENTS: usize = 64;
+// TODO: Use this in the Rust ports of C `SetLeftEdge()`/`SetRightEdge()`,
+// which scale tiled phase-difference offsets by `TILEDPSICOLFACTOR`.
 const TILEDPSI_COL_FACTOR: f64 = 0.8;
 const TMP_TILE_DIR_ROOT: &str = "snaphu_tiles_";
 const TILE_INIT_FILE_ROOT: &str = "snaphu_tileinit_";
