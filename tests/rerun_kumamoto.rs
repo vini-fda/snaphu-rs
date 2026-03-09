@@ -3,7 +3,7 @@
 //! Run with:
 //!   rerun
 //!   cargo test --release --features rerun --test rerun_kumamoto -- --ignored --nocapture
-//! 
+//!
 //! To run only a particular test:
 //!   cargo test --release --features rerun --test rerun_kumamoto rerun_kumamoto_as_tensor -- --ignored --nocapture
 
