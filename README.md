@@ -8,7 +8,7 @@ a C implementation of a statistical-cost, network-flow algorithm for two-dimensi
 This library is still heavily **work-in-progress**. The plan is to have a library that closely matches the original C implementation, but
 using 100% idiomatic Rust, with proper documentation, and an easy-to-use API.
 
-The emphasis is first on **correctness**, then performance. So tests comparing both implementations should be implemented soon.
+The emphasis is first on **correctness**, then performance. With that in mind, we have end to end tests comparing both implementations in `tests/`.
 
 ## Generating synthetic wrapped interferograms
 
