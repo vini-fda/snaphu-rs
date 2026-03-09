@@ -2022,23 +2022,6 @@ pub struct AssembleTilesResult {
     pub conn_comp_labels: Option<Vec<Vec<u32>>>,
 }
 
-fn validate_row_col_layout_i16(
-    arr: &[Vec<i16>],
-    nrow: usize,
-    ncol: usize,
-) -> Result<(), TileAssemblyError> {
-    if arr.len() != 2 * nrow - 1 {
-        return Err(TileAssemblyError::InvalidFlowLayout);
-    }
-    for (row, vals) in arr.iter().enumerate() {
-        let expected = if row < nrow - 1 { ncol } else { ncol - 1 };
-        if vals.len() != expected {
-            return Err(TileAssemblyError::InvalidFlowLayout);
-        }
-    }
-    Ok(())
-}
-
 fn validate_row_col_layout_incr(
     arr: &[Vec<IncrCost>],
     nrow: usize,
