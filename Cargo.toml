@@ -13,7 +13,6 @@ keywords = ["snaphu", "insar", "sar"]
 categories = ["science", "mathematics"]
 
 [dependencies]
-libc = "0.2"
 log = "0.4.29"
 env_logger = "0.11.8"
 cost_scaling_rs = { package = "cost-scaling-rs", git = "https://github.com/vini-fda/cost_scaling_rs.git", branch = "master" }
