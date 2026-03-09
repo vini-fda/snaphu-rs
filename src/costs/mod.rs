@@ -642,7 +642,6 @@ fn incidence_geometry(a: f64, re: f64, slantrange: f64) -> Result<(f64, f64, f64
 
 fn build_topo_column_params(
     col: usize,
-    ncol: usize,
     nearrange: f64,
     baseline: f64,
     baseline_angle: f64,
@@ -675,7 +674,6 @@ fn build_topo_column_params(
     let eicrit = (dzrcrit - model.const1) / model.slope1;
     let dphilaypeak = params.dzlaypeak / ambiguity_height;
 
-    let _ = ncol;
     Ok(TopoColumnParams {
         ambiguity_height,
         dzr0,
@@ -796,7 +794,6 @@ pub fn build_stat_costs_topo(
     for col in 0..(ncol - 1) {
         let geom = build_topo_column_params(
             col,
-            ncol,
             nearrange,
             baseline,
             baseline_angle,
@@ -929,7 +926,6 @@ pub fn build_stat_costs_topo(
     for col in 0..ncol {
         let geom = build_topo_column_params(
             col,
-            ncol,
             nearrange,
             baseline,
             baseline_angle,
