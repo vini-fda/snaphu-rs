@@ -8,6 +8,7 @@
 
 use crate::config::RunConfig;
 use crate::data::ops::integrate_phase;
+use crate::data::raster::Raster;
 use crate::data::tile::TileRegion;
 use crate::unwrapping::flow::{UnwrapTileParams, unwrap_tile};
 use crate::unwrapping::tiles::{
@@ -388,12 +389,39 @@ pub fn run_multi_tile(input: MultiTileRunParams<'_>) -> io::Result<IntegratedSec
                         break;
                     }
 
+                    let tile_mag_flat: Vec<f32> =
+                        tile_mag.iter().flat_map(|r| r.iter().copied()).collect();
+                    let tile_wrapped_flat: Vec<f32> = tile_wrapped
+                        .iter()
+                        .flat_map(|r| r.iter().copied())
+                        .collect();
+                    let tile_mag_raster = Raster::new(region.cols, region.rows, tile_mag_flat);
+                    let tile_wrapped_raster =
+                        Raster::new(region.cols, region.rows, tile_wrapped_flat.clone());
+                    let tile_power_raster = tile_power.as_ref().map(|grid| {
+                        Raster::new(
+                            region.cols,
+                            region.rows,
+                            grid.iter().flat_map(|r| r.iter().copied()).collect(),
+                        )
+                    });
+                    let tile_corr_raster = tile_corr.as_ref().map(|grid| {
+                        Raster::new(
+                            region.cols,
+                            region.rows,
+                            grid.iter().flat_map(|r| r.iter().copied()).collect(),
+                        )
+                    });
+
                     let result = unwrap_tile(
                         UnwrapTileParams {
-                            mag: &tile_mag,
-                            wrapped_phase: &tile_wrapped,
-                            power: tile_power.as_deref(),
-                            correlation: tile_corr.as_deref(),
+                            tile: *region,
+                            mag: &tile_mag_raster,
+                            wrapped_phase: &tile_wrapped_raster,
+                            power: tile_power_raster.as_ref(),
+                            correlation: tile_corr_raster.as_ref(),
+                            unwrapped_estimate: None,
+                            arc_weights: None,
                             initial_flows: None,
                             cost_threshold: 0,
                             min_region_size: 1,
@@ -421,10 +449,6 @@ pub fn run_multi_tile(input: MultiTileRunParams<'_>) -> io::Result<IntegratedSec
                                 }
                             };
 
-                            let tile_wrapped_flat: Vec<f32> = tile_wrapped
-                                .iter()
-                                .flat_map(|r| r.iter().copied())
-                                .collect();
                             let unw_phase_flat = integrate_phase(
                                 &tile_wrapped_flat,
                                 &flat_flows,

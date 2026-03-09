@@ -1,6 +1,7 @@
 //! Lookup table builders for rho/dz statistics.
 
 use crate::constants::{BIGGEST_DZ_RHO_MAX, LARGE_FLOAT, MAX_ITERATIONS, SQRT_HALF};
+use crate::data::ops::{lin_interp_1d, lin_interp_2d};
 use crate::data::tile::TileRegion;
 use std::error::Error;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -48,10 +49,12 @@ pub struct DzrCritLookup {
 }
 
 impl DzrCritLookup {
+    /// Returns the first nominal incidence angle covered by the table, in radians.
     pub fn start_angle(&self) -> f64 {
         self.start_angle
     }
 
+    /// Returns the nominal-incidence sampling step, in radians.
     pub fn angle_step(&self) -> f64 {
         self.angle_step
     }
@@ -66,6 +69,16 @@ impl DzrCritLookup {
 
     pub fn values(&self) -> &[f32] {
         &self.values
+    }
+
+    /// Interpolates the lookup table at a physical nominal incidence angle.
+    ///
+    /// `angle_rad` is in radians. Values outside the tabulated range clamp to
+    /// the nearest endpoint. The returned value is computed from the contiguous
+    /// row-major table storage using the legacy SNAPHU interpolation rule.
+    pub fn interp(&self, angle_rad: f64) -> f32 {
+        let idx = (angle_rad - self.start_angle) / self.angle_step;
+        lin_interp_1d(&self.values, idx)
     }
 }
 
@@ -82,17 +95,38 @@ pub struct DzRhoMaxLookup {
 }
 
 impl DzRhoMaxLookup {
+    /// Returns the number of nominal-incidence samples stored in the table.
     pub fn angle_count(&self) -> usize {
         self.angle_count
     }
 
+    /// Returns the number of correlation samples stored in the table.
     pub fn rho_count(&self) -> usize {
         self.rho_count
     }
 
+    /// Returns a table element by integer table coordinates.
     pub fn value(&self, angle_idx: usize, rho_idx: usize) -> f32 {
         let idx = angle_idx * self.rho_count + rho_idx;
         self.values[idx]
+    }
+
+    /// Interpolates the table at a physical incidence angle and correlation.
+    ///
+    /// `angle_rad` is in radians and `rho` is unitless correlation in the
+    /// `[0, 1]` range. Values outside the tabulated range clamp to the nearest
+    /// valid table edge. The underlying storage is contiguous row-major:
+    /// angle-major rows by correlation-major columns.
+    pub fn interp(&self, angle_rad: f64, rho: f64) -> f32 {
+        let angle_idx = (angle_rad - self.start_angle) / self.angle_step;
+        let rho_idx = (rho - self.rho_min) / self.rho_step;
+        lin_interp_2d(
+            &self.values,
+            self.angle_count,
+            self.rho_count,
+            angle_idx,
+            rho_idx,
+        )
     }
 }
 
@@ -481,6 +515,31 @@ mod tests {
         let expected = (-params.range_spacing * start_angle.cos()) as f32;
         let unit_rho = dzrho.value(0, rho_count - 1);
         assert!((unit_rho - expected).abs() < 1e-3 * expected.abs().max(1.0));
+    }
+
+    #[test]
+    fn dzrcrit_interp_clamps_to_table_bounds() {
+        let params = sample_params();
+        let tile = TileRegion::new(0, 0, 32, 8);
+        let lut = build_dzrcrit_lookup(&tile, &params).unwrap();
+        assert_eq!(lut.interp(lut.start_angle() - 10.0), lut.values()[0]);
+        assert_eq!(
+            lut.interp(lut.start_angle() + 10.0),
+            *lut.values().last().unwrap()
+        );
+    }
+
+    #[test]
+    fn dzrho_interp_uses_physical_coordinates() {
+        let params = sample_params();
+        let tile = TileRegion::new(0, 0, 32, 8);
+        let dzrcrit = build_dzrcrit_lookup(&tile, &params).unwrap();
+        let lut = build_dz_rho_max_lookup(&dzrcrit, 0.1, 0.2, 4, &params).unwrap();
+        assert!(lut.interp(dzrcrit.start_angle() - 1.0, 0.1).is_finite());
+        assert!(
+            lut.interp(dzrcrit.start_angle() + 0.5 * dzrcrit.angle_step(), 0.3)
+                .is_finite()
+        );
     }
 
     #[test]

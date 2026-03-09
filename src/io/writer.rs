@@ -1,6 +1,7 @@
 //! Output helpers for unwrapped phase products.
 
 use crate::costs::types::IncrCost;
+use crate::costs::types::{Cost, SmoothCost};
 use crate::data::raster::Raster;
 use crate::io::reader::parse_filename;
 use std::fs::File;
@@ -345,6 +346,22 @@ impl_native_writable!(u64);
 impl_native_writable!(i64);
 impl_native_writable!(f32);
 impl_native_writable!(f64);
+
+impl NativeWritable for Cost {
+    fn write_ne<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        self.offset.write_ne(writer)?;
+        self.sigma_sq.write_ne(writer)?;
+        self.dz_max.write_ne(writer)?;
+        self.lay_cost.write_ne(writer)
+    }
+}
+
+impl NativeWritable for SmoothCost {
+    fn write_ne<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        self.offset.write_ne(writer)?;
+        self.sigma_sq.write_ne(writer)
+    }
+}
 
 /// Write a contiguous 2-D array to disk in native-endian element order.
 ///

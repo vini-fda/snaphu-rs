@@ -28,6 +28,12 @@ pub enum InitMethod {
     Mcf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransmitMode {
+    PingPong,
+    SingleAntenna,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InputFiles {
     pub infile: String,
@@ -112,25 +118,54 @@ pub struct RunConfig {
     pub earthradius: f64,
     pub altitude: f64,
     pub orbitradius: f64,
+    pub baseline_angle: f64,
+    pub transmit_mode: TransmitMode,
     pub baseline: f64,
     pub ncorrlooks: f64,
     pub nearrange: f64,
     pub dr: f64,
     pub da: f64,
+    pub range_resolution: f64,
     pub lambda: f64,
+    pub kds: f64,
+    pub specular_exponent: f64,
+    pub dzrcrit_factor: f64,
+    pub shadow: bool,
+    pub dzeimin: f64,
+    pub laywidth: usize,
+    pub layminei: f64,
+    pub sloperatio_factor: f64,
+    pub sigsqei: f64,
+    pub drho: f64,
+    pub threshold: f64,
+    pub initdzr: f64,
+    pub initdzstep: f64,
+    pub dnomincangle: f64,
+    pub costscaleambight: f64,
     pub rhosconst1: f64,
     pub rhosconst2: f64,
     pub cstd1: f64,
     pub cstd2: f64,
     pub cstd3: f64,
+    pub defaultcorr: f64,
+    pub rhominfactor: f64,
+    pub dzlaypeak: f64,
+    pub azdzfactor: f64,
+    pub dzeifactor: f64,
+    pub dzeiweight: f64,
+    pub dzlayfactor: f64,
+    pub layconst: f64,
     pub defothreshfactor: f64,
     pub defomax: f64,
     pub sigsqcorr: f64,
     pub costscale: f64,
     pub defolayconst: f64,
     pub sigsqshortmin: i64,
+    pub sigsqlayfactor: f64,
     pub kperpdpsi: usize,
     pub kpardpsi: usize,
+    pub krowei: usize,
+    pub kcolei: usize,
     pub maxcost: i64,
     pub layfalloffconst: i64,
     pub nshortcycle: i64,
@@ -178,25 +213,54 @@ impl Default for RunConfig {
             earthradius: 6_378_000.0,
             altitude: 0.0,
             orbitradius: 7_153_000.0,
+            baseline_angle: 1.25 * std::f64::consts::PI,
+            transmit_mode: TransmitMode::PingPong,
             baseline: 150.0,
             ncorrlooks: 23.8,
             nearrange: 831_000.0,
             dr: 8.0,
             da: 20.0,
+            range_resolution: 10.0,
             lambda: 0.056_564_7,
+            kds: 0.02,
+            specular_exponent: 8.0,
+            dzrcrit_factor: 2.0,
+            shadow: false,
+            dzeimin: -4.0,
+            laywidth: 16,
+            layminei: 1.25,
+            sloperatio_factor: 1.18,
+            sigsqei: 100.0,
+            drho: 0.005,
+            threshold: 0.001,
+            initdzr: 2048.0,
+            initdzstep: 100.0,
+            dnomincangle: 0.01,
+            costscaleambight: 80.0,
             rhosconst1: 1.3,
             rhosconst2: 0.14,
             cstd1: 0.4,
             cstd2: 0.35,
             cstd3: 0.06,
+            defaultcorr: 0.01,
+            rhominfactor: 1.3,
+            dzlaypeak: -2.0,
+            azdzfactor: 0.99,
+            dzeifactor: 4.0,
+            dzeiweight: 0.5,
+            dzlayfactor: 1.0,
+            layconst: 0.9,
             defothreshfactor: 1.2,
             defomax: 1.2,
             sigsqcorr: 0.05,
             costscale: 100.0,
             defolayconst: 0.9,
             sigsqshortmin: 1,
+            sigsqlayfactor: 0.1,
             kperpdpsi: 7,
             kpardpsi: 7,
+            krowei: 65,
+            kcolei: 257,
             maxcost: 1000,
             layfalloffconst: 2,
             nshortcycle: 200,
@@ -341,6 +405,16 @@ pub fn apply_config_entries(
                     params.baseline = v;
                 }
             }
+            "BASELINEANGLE" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.baseline_angle = v;
+                }
+            }
+            "TRANSMITMODE" => match entry.value.as_str() {
+                "PINGPONG" => params.transmit_mode = TransmitMode::PingPong,
+                "SINGLEANTTRANSMIT" => params.transmit_mode = TransmitMode::SingleAntenna,
+                _ => {}
+            },
             "NEARRANGE" => {
                 if let Some(v) = string_to_double(&entry.value) {
                     params.nearrange = v;
@@ -359,6 +433,82 @@ pub fn apply_config_entries(
             "LAMBDA" => {
                 if let Some(v) = string_to_double(&entry.value) {
                     params.lambda = v;
+                }
+            }
+            "RANGERES" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.range_resolution = v;
+                }
+            }
+            "KDS" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.kds = v;
+                }
+            }
+            "SPECULAREXP" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.specular_exponent = v;
+                }
+            }
+            "DZRCRITFACTOR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.dzrcrit_factor = v;
+                }
+            }
+            "SHADOW" => params.shadow = is_true(&entry.value),
+            "DZEIMIN" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.dzeimin = v;
+                }
+            }
+            "LAYWIDTH" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.laywidth = v.max(0) as usize;
+                }
+            }
+            "LAYMINEI" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.layminei = v;
+                }
+            }
+            "SLOPERATIOFACTOR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.sloperatio_factor = v;
+                }
+            }
+            "SIGSQEI" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.sigsqei = v;
+                }
+            }
+            "DRHO" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.drho = v;
+                }
+            }
+            "THRESHOLD" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.threshold = v;
+                }
+            }
+            "INITDZR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.initdzr = v;
+                }
+            }
+            "INITDZSTEP" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.initdzstep = v;
+                }
+            }
+            "DNOMINCANGLE" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.dnomincangle = v;
+                }
+            }
+            "COSTSCALEAMBIGHT" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.costscaleambight = v;
                 }
             }
             "RHOSCONST1" => {
@@ -384,6 +534,46 @@ pub fn apply_config_entries(
             "CSTD3" => {
                 if let Some(v) = string_to_double(&entry.value) {
                     params.cstd3 = v;
+                }
+            }
+            "DEFAULTCORR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.defaultcorr = v;
+                }
+            }
+            "RHOMINFACTOR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.rhominfactor = v;
+                }
+            }
+            "DZLAYPEAK" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.dzlaypeak = v;
+                }
+            }
+            "AZDZFACTOR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.azdzfactor = v;
+                }
+            }
+            "DZEIFACTOR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.dzeifactor = v;
+                }
+            }
+            "DZEIWEIGHT" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.dzeiweight = v;
+                }
+            }
+            "DZLAYFACTOR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.dzlayfactor = v;
+                }
+            }
+            "LAYCONST" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.layconst = v;
                 }
             }
             "DEFOTHRESHFACTOR" => {
@@ -416,6 +606,11 @@ pub fn apply_config_entries(
                     params.sigsqshortmin = v;
                 }
             }
+            "SIGSQLAYFACTOR" => {
+                if let Some(v) = string_to_double(&entry.value) {
+                    params.sigsqlayfactor = v;
+                }
+            }
             "KPERPDPSI" => {
                 if let Some(v) = string_to_long(&entry.value) {
                     params.kperpdpsi = v as usize;
@@ -424,6 +619,16 @@ pub fn apply_config_entries(
             "KPARDPSI" => {
                 if let Some(v) = string_to_long(&entry.value) {
                     params.kpardpsi = v as usize;
+                }
+            }
+            "KROWEI" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.krowei = v.max(0) as usize;
+                }
+            }
+            "KCOLEI" => {
+                if let Some(v) = string_to_long(&entry.value) {
+                    params.kcolei = v.max(0) as usize;
                 }
             }
             "MAXCOST" => {
@@ -563,14 +768,77 @@ pub fn check_params(
     if params.dr <= 0.0 || params.da <= 0.0 {
         return Err(CheckParamsError::InvalidPositiveParam("dr/da"));
     }
+    if params.range_resolution <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("range_resolution"));
+    }
     if params.lambda <= 0.0 {
         return Err(CheckParamsError::InvalidPositiveParam("lambda"));
+    }
+    if !params.kds.is_finite() || params.kds <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("kds"));
+    }
+    if !params.specular_exponent.is_finite() || params.specular_exponent <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("specular_exponent"));
+    }
+    if !params.dzrcrit_factor.is_finite() || params.dzrcrit_factor <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("dzrcrit_factor"));
+    }
+    if params.laywidth == 0 {
+        return Err(CheckParamsError::InvalidPositiveParam("laywidth"));
+    }
+    if !params.sloperatio_factor.is_finite() || params.sloperatio_factor <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("sloperatio_factor"));
+    }
+    if !params.sigsqei.is_finite() || params.sigsqei < 0.0 {
+        return Err(CheckParamsError::InvalidRange("sigsqei"));
+    }
+    if !params.drho.is_finite() || params.drho <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("drho"));
+    }
+    if !params.threshold.is_finite() || params.threshold <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("threshold"));
+    }
+    if !params.initdzr.is_finite() || params.initdzr <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("initdzr"));
+    }
+    if !params.initdzstep.is_finite() || params.initdzstep <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("initdzstep"));
+    }
+    if !params.dnomincangle.is_finite() || params.dnomincangle <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("dnomincangle"));
+    }
+    if !params.costscaleambight.is_finite() || params.costscaleambight <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("costscaleambight"));
+    }
+    if !params.defaultcorr.is_finite() || !(0.0..=1.0).contains(&params.defaultcorr) {
+        return Err(CheckParamsError::InvalidRange("defaultcorr"));
+    }
+    if !params.rhominfactor.is_finite() || params.rhominfactor <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("rhominfactor"));
+    }
+    if !params.azdzfactor.is_finite() || params.azdzfactor <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("azdzfactor"));
+    }
+    if !params.dzeifactor.is_finite() || params.dzeifactor <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("dzeifactor"));
+    }
+    if !params.dzeiweight.is_finite() || params.dzeiweight < 0.0 {
+        return Err(CheckParamsError::InvalidRange("dzeiweight"));
+    }
+    if !params.dzlayfactor.is_finite() || params.dzlayfactor <= 0.0 {
+        return Err(CheckParamsError::InvalidPositiveParam("dzlayfactor"));
+    }
+    if !params.layconst.is_finite() || params.layconst <= 0.0 || params.layconst >= 1.0 {
+        return Err(CheckParamsError::InvalidRange("layconst"));
     }
     if params.maxcost <= 0 {
         return Err(CheckParamsError::InvalidPositiveParam("maxcost"));
     }
     if params.sigsqshortmin <= 0 {
         return Err(CheckParamsError::InvalidPositiveParam("sigsqshortmin"));
+    }
+    if !params.sigsqlayfactor.is_finite() || params.sigsqlayfactor < 0.0 {
+        return Err(CheckParamsError::InvalidRange("sigsqlayfactor"));
     }
     if !params.defothreshfactor.is_finite() || params.defothreshfactor <= 0.0 {
         return Err(CheckParamsError::InvalidPositiveParam("defothreshfactor"));
@@ -594,6 +862,9 @@ pub fn check_params(
         || params.kpardpsi.is_multiple_of(2)
     {
         return Err(CheckParamsError::InvalidRange("kperpdpsi/kpardpsi"));
+    }
+    if params.krowei == 0 || params.kcolei == 0 {
+        return Err(CheckParamsError::InvalidPositiveParam("krowei/kcolei"));
     }
     if params.layfalloffconst <= 0 {
         return Err(CheckParamsError::InvalidPositiveParam("layfalloffconst"));

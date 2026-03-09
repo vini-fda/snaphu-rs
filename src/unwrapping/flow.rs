@@ -2,8 +2,11 @@
 
 use crate::config::{InputFiles, OutputFiles, RunConfig};
 use crate::costs::types::IncrCost;
-use crate::costs::{BuildCostArraysResult, CostBuildError, build_cost_arrays};
+use crate::costs::{BuildCostArraysResult, CostBuildError, CostBuildInputs, build_cost_arrays};
 use crate::data::ops::cycle_residue;
+use crate::data::raster::Raster;
+use crate::data::tile::TileRegion;
+use crate::io::reader::RowColTile;
 use crate::network::{NetworkCostError, SolveCs2Params, SolveMstParams, solve_cs2, solve_mst};
 use crate::unwrapping::tiles::set_tile_init_outfile;
 use crate::unwrapping::tiles::{
@@ -115,10 +118,20 @@ pub fn unwrap(
 
 #[derive(Debug, Clone)]
 pub struct UnwrapTileParams<'a> {
-    pub mag: &'a [Vec<f32>],
-    pub wrapped_phase: &'a [Vec<f32>],
-    pub power: Option<&'a [Vec<f32>]>,
-    pub correlation: Option<&'a [Vec<f32>]>,
+    /// Tile geometry in full-scene coordinates.
+    pub tile: TileRegion,
+    /// Contiguous row-major magnitude raster with shape `tile.rows x tile.cols`.
+    pub mag: &'a Raster<f32>,
+    /// Contiguous row-major wrapped phase raster with shape `tile.rows x tile.cols`.
+    pub wrapped_phase: &'a Raster<f32>,
+    /// Optional contiguous row-major power raster with shape `tile.rows x tile.cols`.
+    pub power: Option<&'a Raster<f32>>,
+    /// Optional contiguous row-major correlation raster with shape `tile.rows x tile.cols`.
+    pub correlation: Option<&'a Raster<f32>>,
+    /// Optional contiguous row-major coarse unwrapped estimate.
+    pub unwrapped_estimate: Option<&'a Raster<f32>>,
+    /// Optional packed row/column scalar arc weights for the tile.
+    pub arc_weights: Option<&'a RowColTile<i16>>,
     pub initial_flows: Option<Vec<Vec<i16>>>,
     pub cost_threshold: i16,
     pub min_region_size: usize,
@@ -183,24 +196,13 @@ fn validate_flows_shape(
     Ok(())
 }
 
-fn flatten_grid(arr: &[Vec<f32>], nrow: usize, ncol: usize) -> Result<Vec<f32>, UnwrapTileError> {
-    if arr.len() != nrow || arr.iter().any(|row| row.len() != ncol) {
+fn cycle_residue_2d(wrapped_phase: &Raster<f32>) -> Result<Vec<Vec<i8>>, UnwrapTileError> {
+    let nrow = wrapped_phase.height;
+    let ncol = wrapped_phase.width;
+    if !wrapped_phase.has_valid_shape() {
         return Err(UnwrapTileError::InvalidInputShape);
     }
-    let mut out = Vec::with_capacity(nrow * ncol);
-    for row in arr {
-        out.extend_from_slice(row);
-    }
-    Ok(out)
-}
-
-fn cycle_residue_2d(
-    wrapped_phase: &[Vec<f32>],
-    nrow: usize,
-    ncol: usize,
-) -> Result<Vec<Vec<i8>>, UnwrapTileError> {
-    let flat = flatten_grid(wrapped_phase, nrow, ncol)?;
-    let residue = cycle_residue(&flat, nrow, ncol);
+    let residue = cycle_residue(&wrapped_phase.data, nrow, ncol);
     let mut out = vec![vec![0i8; ncol - 1]; nrow - 1];
     for row in 0..(nrow - 1) {
         for col in 0..(ncol - 1) {
@@ -217,28 +219,41 @@ pub fn unwrap_tile(
     params: UnwrapTileParams<'_>,
     config: &RunConfig,
 ) -> Result<UnwrapTileResult, UnwrapTileError> {
-    if params.mag.is_empty() || params.mag[0].is_empty() {
+    if params.mag.is_empty() || params.mag.width == 0 || params.mag.height == 0 {
         return Err(UnwrapTileError::InvalidDimensions);
     }
-    let nrow = params.mag.len();
-    let ncol = params.mag[0].len();
+    let nrow = params.mag.height;
+    let ncol = params.mag.width;
     if nrow < 2 || ncol < 2 {
         return Err(UnwrapTileError::InvalidDimensions);
     }
-    if params.mag.iter().any(|row| row.len() != ncol)
-        || params.wrapped_phase.len() != nrow
-        || params.wrapped_phase.iter().any(|row| row.len() != ncol)
+    if !params.mag.has_valid_shape()
+        || !params.wrapped_phase.has_valid_shape()
+        || params.wrapped_phase.width != ncol
+        || params.wrapped_phase.height != nrow
+        || params
+            .power
+            .is_some_and(|r| !r.has_valid_shape() || r.width != ncol || r.height != nrow)
+        || params
+            .correlation
+            .is_some_and(|r| !r.has_valid_shape() || r.width != ncol || r.height != nrow)
+        || params
+            .unwrapped_estimate
+            .is_some_and(|r| !r.has_valid_shape() || r.width != ncol || r.height != nrow)
     {
         return Err(UnwrapTileError::InvalidInputShape);
     }
 
-    let cost_arrays = build_cost_arrays(
-        params.mag,
-        params.wrapped_phase,
-        params.power,
-        params.correlation,
-        config,
-    )?;
+    let cost_inputs = CostBuildInputs {
+        tile: params.tile,
+        mag: params.mag,
+        wrapped_phase: params.wrapped_phase,
+        power: params.power,
+        correlation: params.correlation,
+        unwrapped_estimate: params.unwrapped_estimate,
+        arc_weights: params.arc_weights,
+    };
+    let cost_arrays = build_cost_arrays(&cost_inputs, config)?;
 
     let flows = if let Some(flows) = params.initial_flows {
         validate_flows_shape(&flows, nrow, ncol)?;
@@ -249,7 +264,7 @@ pub fn unwrap_tile(
             .map(|w| vec![0i16; w])
             .collect()
     } else {
-        let residue = cycle_residue_2d(params.wrapped_phase, nrow, ncol)?;
+        let residue = cycle_residue_2d(params.wrapped_phase)?;
         if log::log_enabled!(log::Level::Debug) {
             let mut pos = 0usize;
             let mut neg = 0usize;
@@ -374,18 +389,21 @@ mod tests {
 
     #[test]
     fn unwrap_tile_builds_costs_and_initializes_flows() {
-        let mag = vec![vec![1.0f32, 1.0], vec![1.0, 1.0]];
-        let wrapped = vec![vec![0.0f32, 0.1], vec![0.2, 0.3]];
+        let mag = Raster::new(2, 2, vec![1.0f32, 1.0, 1.0, 1.0]);
+        let wrapped = Raster::new(2, 2, vec![0.0f32, 0.1, 0.2, 0.3]);
         let cfg = RunConfig {
             unwrapped: true,
             ..RunConfig::default()
         };
         let out = unwrap_tile(
             UnwrapTileParams {
+                tile: TileRegion::new(0, 0, 2, 2),
                 mag: &mag,
                 wrapped_phase: &wrapped,
                 power: None,
                 correlation: None,
+                unwrapped_estimate: None,
+                arc_weights: None,
                 initial_flows: None,
                 cost_threshold: 0,
                 min_region_size: 1,
@@ -400,8 +418,8 @@ mod tests {
 
     #[test]
     fn unwrap_tile_runs_region_growth_modes() {
-        let mag = vec![vec![1.0f32, 1.0], vec![1.0, 1.0]];
-        let wrapped = vec![vec![0.0f32, 0.0], vec![0.0, 0.0]];
+        let mag = Raster::new(2, 2, vec![1.0f32, 1.0, 1.0, 1.0]);
+        let wrapped = Raster::new(2, 2, vec![0.0f32, 0.0, 0.0, 0.0]);
         let cfg = RunConfig {
             regrow_conn_comps: true,
             ntilerow: 2,
@@ -410,10 +428,13 @@ mod tests {
         };
         let out = unwrap_tile(
             UnwrapTileParams {
+                tile: TileRegion::new(0, 0, 2, 2),
                 mag: &mag,
                 wrapped_phase: &wrapped,
                 power: None,
                 correlation: None,
+                unwrapped_estimate: None,
+                arc_weights: None,
                 initial_flows: None,
                 cost_threshold: 0,
                 min_region_size: 1,

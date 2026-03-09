@@ -19,12 +19,15 @@ where
 {
     use crate::cli::{ProcessArgsError, process_args};
     use crate::config::{FileFormat, InputFiles, OutputFiles, check_params};
+    use crate::costs::CostArrayData;
     use crate::data::ops::integrate_phase;
     use crate::data::raster::Raster;
+    use crate::data::tile::TileRegion;
     use crate::io::reader::{
         CorrelationFile, EdgeMaskParams, InputFileFormat, InputReadSpec, IntensityFiles,
         MagnitudeFileFormat, RasterFileFormat, TileWindow, get_n_lines, read_byte_mask,
-        read_correlation, read_input_file, read_intensity, read_magnitude, set_up_do_tile_mask,
+        read_correlation, read_input_file, read_intensity, read_magnitude,
+        read_unwrapped_estimate_file, read_weights_file, set_up_do_tile_mask,
     };
     use crate::io::writer::{
         OutputFileFormat, write_2d_array, write_2d_row_col_array, write_output_file,
@@ -163,11 +166,11 @@ options:
         Ok(out)
     }
 
-    fn row_col_to_rasters_i16(
-        values: &[Vec<i16>],
+    fn row_col_to_rasters<T: Clone>(
+        values: &[Vec<T>],
         nrow: usize,
         ncol: usize,
-    ) -> io::Result<(Raster<i16>, Raster<i16>)> {
+    ) -> io::Result<(Raster<T>, Raster<T>)> {
         let widths = row_col_widths(nrow, ncol);
         if values.len() != widths.len() {
             return Err(io::Error::new(
@@ -342,7 +345,7 @@ options:
         )?;
     }
 
-    let power_grid = if !infiles.ampfile.is_empty() {
+    let power_raster = if !infiles.ampfile.is_empty() {
         let intensity = read_intensity(
             &IntensityFiles {
                 ampfile: PathBuf::from(&infiles.ampfile),
@@ -358,12 +361,12 @@ options:
             window,
             params.amplitude,
         )?;
-        Some(to_grid_f32(&intensity.pwr))
+        Some(intensity.pwr)
     } else {
         None
     };
 
-    let corr_grid = if !infiles.corrfile.is_empty() {
+    let corr_raster = if !infiles.corrfile.is_empty() {
         let corr = read_correlation(
             &CorrelationFile {
                 corrfile: PathBuf::from(&infiles.corrfile),
@@ -373,13 +376,39 @@ options:
             nlines_full,
             window,
         )?;
-        Some(to_grid_f32(&corr))
+        Some(corr)
+    } else {
+        None
+    };
+
+    let estimate_raster = if !infiles.estfile.is_empty() {
+        Some(read_unwrapped_estimate_file(
+            Path::new(&infiles.estfile),
+            to_raster_file_format(params.unwrapped_infile_format),
+            linelen,
+            nlines_full,
+            window,
+            false,
+        )?)
+    } else {
+        None
+    };
+
+    let weight_tile = if !infiles.weightfile.is_empty() {
+        Some(read_weights_file(
+            Some(Path::new(&infiles.weightfile)),
+            linelen,
+            nlines_full,
+            window,
+        )?)
     } else {
         None
     };
 
     let mag_grid = to_grid_f32(&input.mag);
     let wrapped_grid = to_grid_f32(&input.wrapped_phase);
+    let power_grid = power_raster.as_ref().map(to_grid_f32);
+    let corr_grid = corr_raster.as_ref().map(to_grid_f32);
 
     if multi_tile {
         use crate::unwrapping::multitile::{MultiTileRunParams, run_multi_tile};
@@ -440,10 +469,13 @@ options:
 
         let out = unwrap_tile(
             UnwrapTileParams {
-                mag: &mag_grid,
-                wrapped_phase: &wrapped_grid,
-                power: power_grid.as_deref(),
-                correlation: corr_grid.as_deref(),
+                tile: TileRegion::new(window.first_row, window.first_col, window.nrow, window.ncol),
+                mag: &input.mag,
+                wrapped_phase: &input.wrapped_phase,
+                power: power_raster.as_ref(),
+                correlation: corr_raster.as_ref(),
+                unwrapped_estimate: estimate_raster.as_ref(),
+                arc_weights: weight_tile.as_ref(),
                 initial_flows,
                 cost_threshold: 0,
                 min_region_size: 1,
@@ -463,8 +495,7 @@ options:
         let unwrapped = Raster::new(window.ncol, window.nrow, unwrapped_phase);
 
         if !outfiles.flowfile.is_empty() {
-            let (row_arcs, col_arcs) =
-                row_col_to_rasters_i16(&out.flows, window.nrow, window.ncol)?;
+            let (row_arcs, col_arcs) = row_col_to_rasters(&out.flows, window.nrow, window.ncol)?;
             let real = write_2d_row_col_array(&row_arcs, &col_arcs, Path::new(&outfiles.flowfile))?;
             log::debug!(
                 "native Rust wrote FLOWFILE {} (requested {})",
@@ -472,15 +503,151 @@ options:
                 outfiles.flowfile
             );
         }
+        if let Some(topo) = &out.cost_arrays.topo_diagnostics
+            && !outfiles.eifile.is_empty()
+        {
+            let real = write_2d_array(
+                topo.normalized_intensity.as_slice(),
+                topo.normalized_intensity.height,
+                topo.normalized_intensity.width,
+                Path::new(&outfiles.eifile),
+            )?;
+            log::debug!(
+                "native Rust wrote EIFILE {} (requested {})",
+                real.display(),
+                outfiles.eifile
+            );
+        }
+        match &out.cost_arrays.costs {
+            CostArrayData::Topo(costs) | CostArrayData::Defo(costs) => {
+                if !outfiles.costoutfile.is_empty() {
+                    let (row_costs, col_costs) =
+                        row_col_to_rasters(costs, window.nrow, window.ncol)?;
+                    let real = write_2d_row_col_array(
+                        &row_costs,
+                        &col_costs,
+                        Path::new(&outfiles.costoutfile),
+                    )?;
+                    log::debug!(
+                        "native Rust wrote COSTOUTFILE {} (requested {})",
+                        real.display(),
+                        outfiles.costoutfile
+                    );
+                }
+                if !outfiles.rowcostfile.is_empty() {
+                    let (row_costs, _) = row_col_to_rasters(costs, window.nrow, window.ncol)?;
+                    let real = write_2d_array(
+                        row_costs.as_slice(),
+                        row_costs.height,
+                        row_costs.width,
+                        Path::new(&outfiles.rowcostfile),
+                    )?;
+                    log::debug!(
+                        "native Rust wrote ROWCOSTFILE {} (requested {})",
+                        real.display(),
+                        outfiles.rowcostfile
+                    );
+                }
+                if !outfiles.colcostfile.is_empty() {
+                    let (_, col_costs) = row_col_to_rasters(costs, window.nrow, window.ncol)?;
+                    let real = write_2d_array(
+                        col_costs.as_slice(),
+                        col_costs.height,
+                        col_costs.width,
+                        Path::new(&outfiles.colcostfile),
+                    )?;
+                    log::debug!(
+                        "native Rust wrote COLCOSTFILE {} (requested {})",
+                        real.display(),
+                        outfiles.colcostfile
+                    );
+                }
+            }
+            CostArrayData::Smooth(costs) => {
+                if !outfiles.costoutfile.is_empty() {
+                    let (row_costs, col_costs) =
+                        row_col_to_rasters(costs, window.nrow, window.ncol)?;
+                    let real = write_2d_row_col_array(
+                        &row_costs,
+                        &col_costs,
+                        Path::new(&outfiles.costoutfile),
+                    )?;
+                    log::debug!(
+                        "native Rust wrote COSTOUTFILE {} (requested {})",
+                        real.display(),
+                        outfiles.costoutfile
+                    );
+                }
+                if !outfiles.rowcostfile.is_empty() {
+                    let (row_costs, _) = row_col_to_rasters(costs, window.nrow, window.ncol)?;
+                    let real = write_2d_array(
+                        row_costs.as_slice(),
+                        row_costs.height,
+                        row_costs.width,
+                        Path::new(&outfiles.rowcostfile),
+                    )?;
+                    log::debug!(
+                        "native Rust wrote ROWCOSTFILE {} (requested {})",
+                        real.display(),
+                        outfiles.rowcostfile
+                    );
+                }
+                if !outfiles.colcostfile.is_empty() {
+                    let (_, col_costs) = row_col_to_rasters(costs, window.nrow, window.ncol)?;
+                    let real = write_2d_array(
+                        col_costs.as_slice(),
+                        col_costs.height,
+                        col_costs.width,
+                        Path::new(&outfiles.colcostfile),
+                    )?;
+                    log::debug!(
+                        "native Rust wrote COLCOSTFILE {} (requested {})",
+                        real.display(),
+                        outfiles.colcostfile
+                    );
+                }
+            }
+            CostArrayData::Scalar(_) => {}
+        }
         if !outfiles.mstcostsfile.is_empty() {
             let (row_arcs, col_arcs) =
-                row_col_to_rasters_i16(&out.cost_arrays.mst_costs, window.nrow, window.ncol)?;
+                row_col_to_rasters(&out.cost_arrays.mst_costs, window.nrow, window.ncol)?;
             let real =
                 write_2d_row_col_array(&row_arcs, &col_arcs, Path::new(&outfiles.mstcostsfile))?;
             log::debug!(
                 "native Rust wrote MSTCOSTSFILE {} (requested {})",
                 real.display(),
                 outfiles.mstcostsfile
+            );
+        }
+        if !outfiles.mstrowcostfile.is_empty() {
+            let (row_arcs, _) =
+                row_col_to_rasters(&out.cost_arrays.mst_costs, window.nrow, window.ncol)?;
+            let real = write_2d_array(
+                row_arcs.as_slice(),
+                row_arcs.height,
+                row_arcs.width,
+                Path::new(&outfiles.mstrowcostfile),
+            )?;
+            log::debug!(
+                "native Rust wrote MSTROWCOSTFILE {} (requested {})",
+                real.display(),
+                outfiles.mstrowcostfile
+            );
+        }
+        if !outfiles.mstcolcostfile.is_empty() {
+            let (_, col_arcs) =
+                row_col_to_rasters(&out.cost_arrays.mst_costs, window.nrow, window.ncol)?;
+            let real = write_2d_array(
+                col_arcs.as_slice(),
+                col_arcs.height,
+                col_arcs.width,
+                Path::new(&outfiles.mstcolcostfile),
+            )?;
+            log::debug!(
+                "native Rust wrote MSTCOLCOSTFILE {} (requested {})",
+                real.display(),
+                outfiles.mstcolcostfile
             );
         }
         if !outfiles.initfile.is_empty() {
