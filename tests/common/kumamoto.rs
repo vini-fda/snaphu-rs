@@ -53,7 +53,7 @@ impl Drop for TempDirGuard {
     }
 }
 
-pub fn cases() -> [KumamotoCase; 3] {
+pub const KUMAMOTO_CASES: [KumamotoCase; 3] = {
     [
         KumamotoCase {
             name: "kumamoto_64",
@@ -71,7 +71,7 @@ pub fn cases() -> [KumamotoCase; 3] {
             height: 1024,
         },
     ]
-}
+};
 
 fn unique_suffix() -> String {
     let stamp = SystemTime::now()

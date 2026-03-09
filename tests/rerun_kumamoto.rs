@@ -21,6 +21,8 @@ use rerun::{
 use std::error::Error;
 use std::io;
 
+use crate::kumamoto::KUMAMOTO_CASES;
+
 fn connect_rerun(session: &str) -> Result<RecordingStream, Box<dyn Error>> {
     RecordingStreamBuilder::new(session)
         .connect_grpc()
@@ -70,7 +72,7 @@ fn rr_phase(phase: &[f32], width: usize, height: usize) -> Image {
 }
 
 fn load_case_outputs() -> Result<KumamotoOutputs, Box<dyn Error>> {
-    let case = kumamoto::cases()[1];
+    let case = KUMAMOTO_CASES[1];
     if let Err(reason) = kumamoto::can_run_case(case) {
         return Err(io::Error::other(format!("cannot run {}: {reason}", case.name)).into());
     }

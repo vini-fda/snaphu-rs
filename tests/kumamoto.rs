@@ -6,9 +6,11 @@ mod snaphu;
 use snaphu_rs::phase_compare::{gradient_compare, wrapped_error_stats};
 use std::error::Error;
 
+use crate::kumamoto::KUMAMOTO_CASES;
+
 #[test]
 fn kumamoto_real_data_matches_c_snaphu() -> Result<(), Box<dyn Error>> {
-    for case in kumamoto::cases() {
+    for case in KUMAMOTO_CASES {
         if let Err(reason) = kumamoto::can_run_case(case) {
             eprintln!("skipping kumamoto test: {reason}");
             return Ok(());
