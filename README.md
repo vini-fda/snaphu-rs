@@ -10,26 +10,6 @@ using 100% idiomatic Rust, with proper documentation, and an easy-to-use API.
 
 The emphasis is first on **correctness**, then performance. With that in mind, we have end to end tests comparing both implementations in `tests/`.
 
-## Generating synthetic wrapped interferograms
-
-The repository ships with a helper example that creates a synthetic wrapped interferogram and writes it to disk as a `*.bin` file. This can be used as input to a phase unwrapping algorithm.
-
-Optionally, it also runs the original `snaphu` binary so we can capture reference outputs for the Rust port.
-
-```
-cargo run --example complex_writer -- \
-    --out-dir target/examples/complex_writer \
-    --snaphu-bin snaphu_original/snaphu \
-    --rerun --write-png
-```
-
-- `--snaphu-bin` defaults to `snaphu` on your `$PATH`; pass `--skip-snaphu` to generate data without invoking the C binary.
-- Re-run with different sizes (`--width/--height`) or `--snaphu-arg` flags to explore other SNAPHU modes.
-- The command writes `wrapped_phase.bin`, `snaphu.out`, and (optionally) `wrapped_phase.png` under the chosen output directory. These files double as fixtures when comparing SNAPHU vs `snaphu-rs`.
-- Use `--rerun` to stream the wrapped/unwrapped fields into a [Rerun](https://rerun.io/) viewer for quick inspection while iterating on the Rust translation.
-
-These datasets will form the initial regression corpus so we can prove parity as the idiomatic Rust implementation replaces the temporary c2rust bindings.
-
 ## License
 
 This project includes code derived from SNAPHU and the cs2 minimum-cost
