@@ -1,6 +1,6 @@
 # SNAPHU: C to Rust Translation Plan
 
-The end-goal is to hand-write a safe, idiomatic Rust implementation that mirrors SNAPHU's C behaviour while isolating state and depending on the published `cost_scaling_rs` crate instead of the vendored CS2 sources. This document lists the constraints, outlines the target Rust architecture, and defines an incremental translation workflow that follows the dependency order captured in `snaphu_translation_order.csv`. The bundled `examples/complex_writer/` generator is incorporated so we can visualize wrapped interferograms, and capture authoritative fixtures that feed the translation effort. Look at `cargo run --example complex_writer -- --help` for further detail.
+The end-goal is to hand-write a safe, idiomatic Rust implementation that mirrors SNAPHU's C behaviour while isolating state and depending on the published `cost_scaling_rs` crate instead of the vendored CS2 sources. This document lists the constraints, outlines the target Rust architecture, and defines an incremental translation workflow that follows the dependency order captured in `snaphu_translation_order.csv`.
 
 ## Guiding Principles
 - **Single source of truth for state**: Replace global variables with explicit structs (e.g. `SnaphuContext`, `UnwrapConfig`, `TileState`). Pass immutable borrows where possible; constrain mutability to focused subsystems.
