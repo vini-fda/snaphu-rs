@@ -10,6 +10,18 @@ using 100% idiomatic Rust, with proper documentation, and an easy-to-use API.
 
 The emphasis is first on **correctness**, then performance. With that in mind, we have end to end tests comparing both implementations in `tests/`.
 
+## Visualization (optional)
+
+The `rerun` feature enables [Rerun](https://rerun.io/)-based visualization tests and the `phase_viewer` example. It is disabled by default so that CI and regular builds stay lightweight.
+
+```bash
+# Run visualization tests locally
+cargo test --features rerun --test rerun_visualization_tests -- --ignored --nocapture
+
+# Run the phase viewer example
+cargo run --features rerun --example phase_viewer -- -W 24639 -H 4187 wrapped.img
+```
+
 ## License
 
 This project includes code derived from SNAPHU and the cs2 minimum-cost

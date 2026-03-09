@@ -2,7 +2,9 @@
 //!
 //! Run with:
 //!   rerun
-//!   cargo test --test rerun_visualization_tests -- --ignored --nocapture
+//!   cargo test --features rerun --test rerun_visualization_tests -- --ignored --nocapture
+
+#![cfg(feature = "rerun")]
 
 #[path = "common/colormap.rs"]
 mod colormap;

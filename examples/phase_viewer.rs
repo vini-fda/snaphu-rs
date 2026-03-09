@@ -8,7 +8,7 @@
 //! rerun
 //!
 //! # Then log one or more phase files (width and height are required)
-//! cargo run --example phase_viewer -- -W 24639 -H 4187 wrapped.img unwrapped.img
+//! cargo run --features rerun --example phase_viewer -- -W 24639 -H 4187 wrapped.img unwrapped.img
 //! ```
 //!
 //! Each file is logged as a separate entity whose name is derived from the
