@@ -18,8 +18,6 @@ use std::path::{Path, PathBuf};
 const LARGE_INT: i64 = 2_000_000_000;
 const ZERO_COST_ARC: i64 = -LARGE_INT;
 const MAX_OFFSET_REFINEMENTS: usize = 64;
-// TODO: Use this in the Rust ports of C `SetLeftEdge()`/`SetRightEdge()`,
-// which scale tiled phase-difference offsets by `TILEDPSICOLFACTOR`.
 const TILEDPSI_COL_FACTOR: f64 = 0.8;
 const TMP_TILE_DIR_ROOT: &str = "snaphu_tiles_";
 const TILE_INIT_FILE_ROOT: &str = "snaphu_tileinit_";
@@ -664,8 +662,26 @@ fn validate_bulk_offsets(
     Ok(())
 }
 
+/// Result of a tile-edge flow/offset computation.
+///
+/// Mirrors the C code which populates both `edgeflows` and `edgecosts[].offset`
+/// in `SetLeftEdge()`/`SetRightEdge()`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeFlowsAndOffsets {
+    pub flows: Vec<i16>,
+    pub cost_offsets: Vec<i16>,
+}
+
 fn to_i16_flow(v: i64) -> Result<i16, TileTraceError> {
     i16::try_from(v).map_err(|_| TileTraceError::FlowOutOfRange { value: v })
+}
+
+/// Compute the fractional-cycle phase residual wrapped to \[-0.5, 0.5).
+///
+/// This matches the C pattern: `dpsi = dphi - floor(dphi); if (dpsi > 0.5) dpsi -= 1.0;`
+fn fractional_cycle(dphi: f64) -> f64 {
+    let dpsi = dphi - dphi.floor();
+    if dpsi > 0.5 { dpsi - 1.0 } else { dpsi }
 }
 
 fn flow_mode(vals: &[i64]) -> i64 {
@@ -718,23 +734,29 @@ pub fn set_upper_edge(
     Ok(flows)
 }
 
-/// Build left boundary flows for one tile.
+/// Build left boundary flows and cost offsets for one tile.
 ///
 /// This is the typed Rust equivalent of C `SetLeftEdge()`.
+/// Cost offsets are scaled by [`TILEDPSI_COL_FACTOR`] as in the original C code.
 pub fn set_left_edge(
     current_left: &[f32],
     last_right: Option<&[f32]>,
     bulk_offsets: &[Vec<i16>],
     tilerow: usize,
     tilecol: usize,
-) -> Result<Vec<i16>, TileTraceError> {
+    nshortcycle: i64,
+) -> Result<EdgeFlowsAndOffsets, TileTraceError> {
+    let n = current_left.len();
     if tilecol == 0 || last_right.is_none() {
-        return Ok(vec![0; current_left.len()]);
+        return Ok(EdgeFlowsAndOffsets {
+            flows: vec![0; n],
+            cost_offsets: vec![0; n],
+        });
     }
     let last_right = last_right.expect("checked above");
-    if last_right.len() != current_left.len() {
+    if last_right.len() != n {
         return Err(TileTraceError::InvalidNeighborEdgeLength {
-            expected: current_left.len(),
+            expected: n,
             got: last_right.len(),
         });
     }
@@ -744,43 +766,59 @@ pub fn set_left_edge(
     let rel =
         i64::from(bulk_offsets[tilerow][tilecol]) - i64::from(bulk_offsets[tilerow][tilecol - 1]);
 
-    let mut flows = Vec::with_capacity(current_left.len());
-    for row in 0..current_left.len() {
+    let mut flows = Vec::with_capacity(n);
+    let mut cost_offsets = Vec::with_capacity(n);
+    for row in 0..n {
         let dphi = f64::from(current_left[row] - last_right[row]) / TWO_PI;
         flows.push(to_i16_flow(l_round(dphi) - rel)?);
+        let dpsi = fractional_cycle(dphi);
+        cost_offsets.push(to_i16_flow(l_round(
+            TILEDPSI_COL_FACTOR * nshortcycle as f64 * dpsi,
+        ))?);
     }
-    Ok(flows)
+    Ok(EdgeFlowsAndOffsets {
+        flows,
+        cost_offsets,
+    })
 }
 
-/// Build right boundary flows for one tile and update row bulk offsets.
+/// Build right boundary flows and cost offsets for one tile and update row bulk offsets.
 ///
 /// This is the typed Rust equivalent of C `SetRightEdge()`.
+/// Cost offsets are scaled by [`TILEDPSI_COL_FACTOR`] as in the original C code.
 pub fn set_right_edge(
     current_right: &[f32],
     next_left: Option<&[f32]>,
     bulk_offsets: &mut [Vec<i16>],
     tilerow: usize,
     tilecol: usize,
-) -> Result<Vec<i16>, TileTraceError> {
+    nshortcycle: i64,
+) -> Result<EdgeFlowsAndOffsets, TileTraceError> {
+    let n = current_right.len();
     let ntilerow = bulk_offsets.len();
     let ntilecol = bulk_offsets.first().map_or(0, Vec::len);
     validate_bulk_offsets(bulk_offsets, ntilerow, ntilecol)?;
 
     if tilecol == ntilecol.saturating_sub(1) || next_left.is_none() {
-        return Ok(vec![0; current_right.len()]);
+        return Ok(EdgeFlowsAndOffsets {
+            flows: vec![0; n],
+            cost_offsets: vec![0; n],
+        });
     }
     let next_left = next_left.expect("checked above");
-    if next_left.len() != current_right.len() {
+    if next_left.len() != n {
         return Err(TileTraceError::InvalidNeighborEdgeLength {
-            expected: current_right.len(),
+            expected: n,
             got: next_left.len(),
         });
     }
 
-    let mut raw = Vec::with_capacity(current_right.len());
-    for row in 0..current_right.len() {
+    let mut raw = Vec::with_capacity(n);
+    let mut dphi_vals = Vec::with_capacity(n);
+    for row in 0..n {
         let dphi = f64::from(next_left[row] - current_right[row]) / TWO_PI;
         raw.push(l_round(dphi));
+        dphi_vals.push(dphi);
     }
 
     let rel = if tilerow == 0 {
@@ -792,7 +830,19 @@ pub fn set_right_edge(
         i64::from(bulk_offsets[tilerow][tilecol + 1]) - i64::from(bulk_offsets[tilerow][tilecol])
     };
 
-    raw.into_iter().map(|v| to_i16_flow(v - rel)).collect()
+    let mut flows = Vec::with_capacity(n);
+    let mut cost_offsets = Vec::with_capacity(n);
+    for (v, dphi) in raw.into_iter().zip(dphi_vals) {
+        flows.push(to_i16_flow(v - rel)?);
+        let dpsi = fractional_cycle(dphi);
+        cost_offsets.push(to_i16_flow(l_round(
+            TILEDPSI_COL_FACTOR * nshortcycle as f64 * dpsi,
+        ))?);
+    }
+    Ok(EdgeFlowsAndOffsets {
+        flows,
+        cost_offsets,
+    })
 }
 
 /// Build bottom boundary flows for one tile and update column bulk offsets.

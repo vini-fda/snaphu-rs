@@ -546,6 +546,7 @@ pub fn run_multi_tile(input: MultiTileRunParams<'_>) -> io::Result<IntegratedSec
                     &mut bulk_offsets,
                     tilerow,
                     tilecol,
+                    params.nshortcycle,
                 )
                 .map_err(|e| {
                     io::Error::other(format!("set_right_edge ({tilerow},{tilecol}): {e:?}"))
