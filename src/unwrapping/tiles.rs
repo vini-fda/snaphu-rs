@@ -737,7 +737,7 @@ pub fn set_upper_edge(
 /// Build left boundary flows and cost offsets for one tile.
 ///
 /// This is the typed Rust equivalent of C `SetLeftEdge()`.
-/// Cost offsets are scaled by [`TILEDPSI_COL_FACTOR`] as in the original C code.
+/// Cost offsets are scaled by `TILEDPSI_COL_FACTOR` as in the original C code.
 pub fn set_left_edge(
     current_left: &[f32],
     last_right: Option<&[f32]>,
@@ -785,7 +785,7 @@ pub fn set_left_edge(
 /// Build right boundary flows and cost offsets for one tile and update row bulk offsets.
 ///
 /// This is the typed Rust equivalent of C `SetRightEdge()`.
-/// Cost offsets are scaled by [`TILEDPSI_COL_FACTOR`] as in the original C code.
+/// Cost offsets are scaled by `TILEDPSI_COL_FACTOR` as in the original C code.
 pub fn set_right_edge(
     current_right: &[f32],
     next_left: Option<&[f32]>,
