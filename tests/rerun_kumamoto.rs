@@ -78,7 +78,7 @@ fn load_case_outputs() -> Result<KumamotoOutputs, Box<dyn Error>> {
 }
 
 #[test]
-#[ignore = "manual visualization test: requires Rerun viewer and local testcases"]
+#[ignore = "manual visualization test: requires Rerun viewer; skip on CI"]
 fn rerun_kumamoto_as_tensor() -> Result<(), Box<dyn Error>> {
     let out = load_case_outputs()?;
     let rr = connect_rerun("rerun_kumamoto_tensor")?;
@@ -104,7 +104,7 @@ fn rerun_kumamoto_as_tensor() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-#[ignore = "manual visualization test: requires Rerun viewer and local testcases"]
+#[ignore = "manual visualization test: requires Rerun viewer; skip on CI"]
 fn rerun_kumamoto_as_image() -> Result<(), Box<dyn Error>> {
     let out = load_case_outputs()?;
     let rr = connect_rerun("rerun_kumamoto_image")?;
