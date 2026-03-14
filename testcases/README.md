@@ -8,7 +8,7 @@ This directory contains three fixed-size SNAPHU input testcases exported from th
 
 Each testcase folder has SNAPHU inputs in:
 
-- `kumamoto_<size>/snaphu_export/interferogram/`
+- `kumamoto_<size>/`
 
 Files you need:
 
@@ -21,7 +21,7 @@ Files you need:
 Use the testcase directory as your working directory:
 
 ```bash
-cd outputs/testcases/kumamoto_64/snaphu_export/interferogram
+cd outputs/testcases/kumamoto_64/
 snaphu -f snaphu.conf Phase_ifg_IW2_VV_08Apr2016_20Apr2016.snaphu.img 64
 ```
 
@@ -36,7 +36,7 @@ SNAPHU width argument = number of samples (columns) in the wrapped phase raster.
 
 ```bash
 for n in 64 256 1024; do
-  d="outputs/testcases/kumamoto_${n}/snaphu_export/interferogram"
+  d="outputs/testcases/kumamoto_${n}/"
   (
     cd "$d" || exit 1
     snaphu -f snaphu.conf Phase_ifg_IW2_VV_08Apr2016_20Apr2016.snaphu.img "$n"

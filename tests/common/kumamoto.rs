@@ -28,8 +28,6 @@ impl KumamotoCase {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("testcases")
             .join(self.name)
-            .join("snaphu_export")
-            .join("interferogram")
     }
 
     pub fn expected_raster_bytes(self) -> usize {
