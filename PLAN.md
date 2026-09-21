@@ -32,9 +32,11 @@ src/
   io/
     reader.rs           # image reading, parameter files
     writer.rs           # unwrap results
+    phase_format.rs     # snaphu-rs `.phase` container (Rust-only extension)
 tests/                  # integration tests
     common/             # common testing utils
     kumamoto.rs         # full test with kumamoto earthquake data
+    phase_format.rs     # `.phase` input/output round-trip vs the FLOAT_DATA path
     rerun_*.rs          # manual tests using the Rerun GUI for visualization
 ```
 Each module owns its portion of `SnaphuContext`; modules expose small structs with clearly documented inputs/outputs so that translation of one module can be validated before touching others.
@@ -69,5 +71,5 @@ Each module owns its portion of `SnaphuContext`; modules expose small structs wi
 
 ## Definition of Done
 1. `cargo test --no-default-features` passes with only the idiomatic Rust implementation.
-2. CLI arguments, config file semantics, and output formats match the original binary (validated via regression suite).
+2. CLI arguments, config file semantics, and output formats match the original binary (validated via regression suite). Rust-only extensions, such as the `FLOAT_DATA_PHASE_FORMAT` container documented in `docs/file-formats.md`, are additive: they never change the behaviour of the formats the C binary understands.
 3. All functions listed in `snaphu_translation_order.csv` are marked `DONE` or `NOT_PLANNED` with explicit rationale.

@@ -10,6 +10,23 @@ using 100% idiomatic Rust, with proper documentation, and an easy-to-use API.
 
 The emphasis is first on **correctness**, then performance. With that in mind, we have end to end tests comparing both implementations in `tests/`.
 
+## File formats
+
+Input and output rasters use the SNAPHU on-disk formats (`COMPLEX_DATA`,
+`FLOAT_DATA`, `ALT_LINE_DATA`, `ALT_SAMPLE_DATA`), plus one snaphu-rs
+extension: `FLOAT_DATA_PHASE_FORMAT`, a `.phase` file that stores its own row
+and column counts in a 64-byte header, so the line-length argument becomes
+optional.
+
+```bash
+snaphu -s -C "INFILEFORMAT FLOAT_DATA_PHASE_FORMAT" \
+          -C "OUTFILEFORMAT FLOAT_DATA_PHASE_FORMAT" \
+          -o unwrapped.phase wrapped.phase
+```
+
+See [docs/file-formats.md](docs/file-formats.md) for the byte layouts, the
+defaults, and Rust/Python snippets for reading and writing `.phase` files.
+
 ## Visualization (optional)
 
 The `rerun` feature enables [Rerun](https://rerun.io/)-based visualization tests and the `phase_viewer` example. It is disabled by default so that CI and regular builds stay lightweight.

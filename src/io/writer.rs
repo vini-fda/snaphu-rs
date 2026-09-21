@@ -3,6 +3,7 @@
 use crate::costs::types::IncrCost;
 use crate::costs::types::{Cost, SmoothCost};
 use crate::data::raster::Raster;
+use crate::io::phase_format::write_phase_file;
 use crate::io::reader::parse_filename;
 use std::fs::File;
 use std::io::{self, Write};
@@ -37,6 +38,10 @@ pub enum OutputFileFormat {
     AltLineData,
     AltSampleData,
     FloatData,
+    /// snaphu-rs extension: single-band floats behind a `.phase` header.
+    ///
+    /// See [`crate::io::phase_format`].
+    FloatDataPhase,
     Unknown,
 }
 
@@ -159,6 +164,7 @@ pub fn write_output_file(
             unwrapped_phase.width,
             outfile,
         ),
+        OutputFileFormat::FloatDataPhase => write_phase_file(unwrapped_phase, outfile),
         OutputFileFormat::Unknown => {
             log::warn!("Illegal format specified for output file; using default float format");
             write_2d_array(
@@ -265,6 +271,7 @@ pub enum LoggedFileFormat {
     FloatData,
     AltLineData,
     AltSampleData,
+    FloatDataPhase,
 }
 
 /// Write one key/value line for a string parameter.
@@ -303,13 +310,10 @@ pub fn log_file_format<W: Write>(
         LoggedFileFormat::FloatData => "FLOAT_DATA",
         LoggedFileFormat::AltLineData => "ALT_LINE_DATA",
         LoggedFileFormat::AltSampleData => "ALT_SAMPLE_DATA",
+        LoggedFileFormat::FloatDataPhase => "FLOAT_DATA_PHASE_FORMAT",
     };
     writeln!(writer, "{key}  {rendered}")?;
     Ok(())
-}
-
-pub fn write_phase_file(_path: &std::path::Path) {
-    // TODO: implement.
 }
 
 pub trait NativeWritable {

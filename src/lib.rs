@@ -23,6 +23,7 @@ where
     use crate::data::ops::integrate_phase;
     use crate::data::raster::Raster;
     use crate::data::tile::TileRegion;
+    use crate::io::phase_format::read_phase_header;
     use crate::io::reader::{
         CorrelationFile, EdgeMaskParams, InputFileFormat, InputReadSpec, IntensityFiles,
         MagnitudeFileFormat, RasterFileFormat, TileWindow, get_n_lines, read_byte_mask,
@@ -42,6 +43,7 @@ where
             FileFormat::FloatData => InputFileFormat::FloatData,
             FileFormat::AltSampleData => InputFileFormat::AltSampleData,
             FileFormat::AltLineData => InputFileFormat::AltLineData,
+            FileFormat::FloatDataPhase => InputFileFormat::FloatDataPhase,
         }
     }
 
@@ -50,6 +52,7 @@ where
             FileFormat::FloatData | FileFormat::ComplexData => RasterFileFormat::FloatData,
             FileFormat::AltSampleData => RasterFileFormat::AltSampleData,
             FileFormat::AltLineData => RasterFileFormat::AltLineData,
+            FileFormat::FloatDataPhase => RasterFileFormat::FloatDataPhase,
         }
     }
 
@@ -58,12 +61,15 @@ where
             FileFormat::FloatData | FileFormat::ComplexData => OutputFileFormat::FloatData,
             FileFormat::AltSampleData => OutputFileFormat::AltSampleData,
             FileFormat::AltLineData => OutputFileFormat::AltLineData,
+            FileFormat::FloatDataPhase => OutputFileFormat::FloatDataPhase,
         }
     }
 
     const FULL_HELP: &str = "\
 snaphu v2.0.7
 usage:  snaphu [options] infile linelength [options]
+        (linelength may be omitted when the input is in the snaphu-rs
+         FLOAT_DATA_PHASE_FORMAT, which stores its own dimensions)
 options:
   -t              use topography mode costs (default)
   -d              use deformation mode costs
@@ -273,6 +279,11 @@ options:
     let infile_path = Path::new(&infiles.infile);
     let infile_format = to_input_file_format(params.infile_format);
     let unwrapped_line_format = to_input_file_format(params.unwrapped_infile_format);
+    if linelen == 0 {
+        // Only reachable for the self-describing `.phase` input format, whose
+        // header supplies the width the linelength positional would have.
+        linelen = read_phase_header(infile_path)?.ncols;
+    }
     let nlines_full = get_n_lines(
         infile_path,
         linelen,
@@ -322,6 +333,7 @@ options:
                 FileFormat::FloatData => MagnitudeFileFormat::FloatData,
                 FileFormat::AltSampleData => MagnitudeFileFormat::AltSampleData,
                 FileFormat::AltLineData => MagnitudeFileFormat::AltLineData,
+                FileFormat::FloatDataPhase => MagnitudeFileFormat::FloatDataPhase,
             },
             linelen,
             nlines_full,

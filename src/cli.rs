@@ -1,7 +1,7 @@
 //! Command-line interface to snaphu-rs.
 
 use crate::config::{
-    CostMode, InitMethod, InputFiles, OutputFiles, RunConfig, apply_config_entries,
+    CostMode, FileFormat, InitMethod, InputFiles, OutputFiles, RunConfig, apply_config_entries,
     read_config_file,
 };
 use std::io;
@@ -346,7 +346,15 @@ pub fn process_args(
         i += 1;
     }
 
-    if infiles.infile.is_empty() || *linelen == 0 {
+    // The snaphu-rs `.phase` input format carries its own dimensions, so the
+    // linelength positional is optional for it.
+    let effective_infile_format = if params.unwrapped {
+        params.unwrapped_infile_format
+    } else {
+        params.infile_format
+    };
+    let self_describing_input = matches!(effective_infile_format, FileFormat::FloatDataPhase);
+    if infiles.infile.is_empty() || (*linelen == 0 && !self_describing_input) {
         return Err(ProcessArgsError::NotEnoughPositionalArgs);
     }
     Ok(())
@@ -558,6 +566,56 @@ mod tests {
         assert_eq!(params.ntilecol, 3);
         assert_eq!(params.rowovrlp, 10);
         assert_eq!(params.colovrlp, 11);
+    }
+
+    #[test]
+    fn process_args_allows_missing_linelength_for_phase_input() {
+        let mut infiles = InputFiles::default();
+        let mut outfiles = OutputFiles::default();
+        let mut params = RunConfig::default();
+        let mut linelen = 0usize;
+        let args = vec![
+            "snaphu".to_string(),
+            "-C".to_string(),
+            "INFILEFORMAT FLOAT_DATA_PHASE_FORMAT".to_string(),
+            "wrapped.phase".to_string(),
+        ];
+
+        process_args(
+            &args,
+            &mut infiles,
+            &mut outfiles,
+            &mut linelen,
+            &mut params,
+        )
+        .unwrap();
+        assert_eq!(infiles.infile, "wrapped.phase");
+        assert_eq!(linelen, 0);
+        assert_eq!(params.infile_format, FileFormat::FloatDataPhase);
+    }
+
+    #[test]
+    fn process_args_still_requires_linelength_for_headerless_input() {
+        let mut infiles = InputFiles::default();
+        let mut outfiles = OutputFiles::default();
+        let mut params = RunConfig::default();
+        let mut linelen = 0usize;
+        let args = vec![
+            "snaphu".to_string(),
+            "-C".to_string(),
+            "INFILEFORMAT FLOAT_DATA".to_string(),
+            "wrapped.f32".to_string(),
+        ];
+
+        let err = process_args(
+            &args,
+            &mut infiles,
+            &mut outfiles,
+            &mut linelen,
+            &mut params,
+        )
+        .unwrap_err();
+        assert_eq!(err, ProcessArgsError::NotEnoughPositionalArgs);
     }
 
     #[test]

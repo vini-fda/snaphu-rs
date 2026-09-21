@@ -12,6 +12,12 @@ pub enum FileFormat {
     FloatData,
     AltSampleData,
     AltLineData,
+    /// snaphu-rs extension (`FLOAT_DATA_PHASE_FORMAT`): single-band floats
+    /// behind a self-describing `.phase` header.
+    ///
+    /// See [`crate::io::phase_format`]. Files in this format are not readable
+    /// by the original SNAPHU C program.
+    FloatDataPhase,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,6 +299,7 @@ fn parse_file_format(value: &str) -> Option<FileFormat> {
         "FLOAT_DATA" => Some(FileFormat::FloatData),
         "ALT_SAMPLE_DATA" => Some(FileFormat::AltSampleData),
         "ALT_LINE_DATA" => Some(FileFormat::AltLineData),
+        "FLOAT_DATA_PHASE_FORMAT" => Some(FileFormat::FloatDataPhase),
         _ => None,
     }
 }
@@ -1315,6 +1322,26 @@ mod tests {
         let outfiles = OutputFiles::default();
         let params = RunConfig::default();
         assert!(check_params(&infiles, &outfiles, 128, 64, &params).is_ok());
+    }
+
+    #[test]
+    fn apply_config_entries_parses_phase_file_format() {
+        let entries = vec![
+            ConfigEntry {
+                key: "INFILEFORMAT".to_string(),
+                value: "FLOAT_DATA_PHASE_FORMAT".to_string(),
+            },
+            ConfigEntry {
+                key: "OUTFILEFORMAT".to_string(),
+                value: "FLOAT_DATA_PHASE_FORMAT".to_string(),
+            },
+        ];
+        let mut infiles = InputFiles::default();
+        let mut outfiles = OutputFiles::default();
+        let mut params = RunConfig::default();
+        apply_config_entries(&entries, &mut infiles, &mut outfiles, &mut params);
+        assert_eq!(params.infile_format, FileFormat::FloatDataPhase);
+        assert_eq!(params.outfile_format, FileFormat::FloatDataPhase);
     }
 
     #[test]
