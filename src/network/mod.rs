@@ -2261,8 +2261,10 @@ pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCos
         );
     }
 
+    // Upstream moved the solver flags (check_solution, comp_duals) to builder
+    // setters; both still default to false.
     let solution = solver
-        .min_cost(false, false)
+        .min_cost()
         .map_err(|err| NetworkCostError::SolverFailure(format!("{err:?}")))?;
 
     let widths = flow_row_lengths(params.nrow, params.ncol);
