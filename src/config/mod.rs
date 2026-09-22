@@ -176,6 +176,12 @@ pub struct RunConfig {
     pub layfalloffconst: i64,
     pub nshortcycle: i64,
     pub maxflow: i64,
+    /// Arc-cost threshold used when growing regions and connected components.
+    pub tile_cost_threshold: i16,
+    /// Smallest region kept when growing regions and connected components.
+    pub min_region_size: usize,
+    /// Cap on connected components; `None` means one per pixel.
+    pub max_conn_comps: Option<usize>,
     pub scndry_arc_flow_max: usize,
     pub tile_edge_weight: f64,
     pub max_cycle_fraction: f64,
@@ -271,6 +277,11 @@ impl Default for RunConfig {
             layfalloffconst: 2,
             nshortcycle: 200,
             maxflow: 4,
+            // Defaults preserve what the CLI hardcoded before these became
+            // configurable; no config-file key sets them yet.
+            tile_cost_threshold: 0,
+            min_region_size: 1,
+            max_conn_comps: None,
             scndry_arc_flow_max: 8,
             tile_edge_weight: 2.5,
             max_cycle_fraction: 1.0e-5,

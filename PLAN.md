@@ -11,7 +11,8 @@ The end-goal is to hand-write a safe, idiomatic Rust implementation that mirrors
 ## Target Crate Layout
 ```
 src/
-  lib.rs                # Public API + CLI entry
+  lib.rs                # Crate root: re-exports the public API, CLI entry
+  api.rs                # run_snaphu / run_snaphu_inplace over in-memory rasters
   cli.rs                # arg parsing -> config builder (clap)
   context.rs            # aggregate of shared runtime state and buffers
   config/
