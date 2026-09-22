@@ -1,6 +1,5 @@
 //! Configuration types for running SNAPHU.
 
-use core::ffi::c_long;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -193,6 +192,23 @@ pub struct RunConfig {
     pub unwrapped_infile_format: FileFormat,
 }
 
+/// The process id to name temporary tile directories after.
+///
+/// Zero where the platform has no processes: wasm has none, and
+/// [`std::process::id`] panics there rather than returning anything. Only the
+/// multi-tile driver uses this, and that wants a filesystem it does not have
+/// either — but `RunConfig::default()` is how every caller starts, so it must
+/// not be the thing that panics.
+#[cfg(not(target_family = "wasm"))]
+fn current_pid() -> i64 {
+    i64::from(std::process::id())
+}
+
+#[cfg(target_family = "wasm")]
+fn current_pid() -> i64 {
+    0
+}
+
 impl Default for RunConfig {
     fn default() -> Self {
         Self {
@@ -221,7 +237,7 @@ impl Default for RunConfig {
             nthreads: 1,
             assemble_only: false,
             tiledir: String::new(),
-            parent_pid: i64::from(std::process::id()),
+            parent_pid: current_pid(),
             earthradius: 6_378_000.0,
             altitude: 0.0,
             orbitradius: 7_153_000.0,
@@ -970,7 +986,13 @@ pub fn string_to_double(input: &str) -> Option<f64> {
 /// legacy function's overflow test).
 ///
 /// This intentionally preserves the C quirk that an empty string parses as `0`.
-pub fn string_to_long(input: &str) -> Option<c_long> {
+///
+/// The width is `i64` rather than `c_long`, which is the same thing everywhere
+/// SNAPHU itself runs and is what the parameters this feeds are declared as.
+/// Taking `c_long` literally would make the accepted range of a config file
+/// depend on the target — 32 bits of it on wasm32, where `c_long` is `i32` —
+/// and a config file means the same thing wherever it is read.
+pub fn string_to_long(input: &str) -> Option<i64> {
     if input.is_empty() {
         return Some(0);
     }
@@ -978,8 +1000,8 @@ pub fn string_to_long(input: &str) -> Option<c_long> {
     // `strtol` accepts leading whitespace. We preserve that behavior while
     // still rejecting any trailing characters.
     let normalized = input.trim_start();
-    let value = normalized.parse::<c_long>().ok()?;
-    if value == c_long::MAX || value == c_long::MIN {
+    let value = normalized.parse::<i64>().ok()?;
+    if value == i64::MAX || value == i64::MIN {
         None
     } else {
         Some(value)
@@ -1196,8 +1218,17 @@ mod tests {
         assert_eq!(string_to_long("12x"), None);
         assert_eq!(string_to_long("12 "), None);
         assert_eq!(string_to_long("abc"), None);
-        assert_eq!(string_to_long(&c_long::MAX.to_string()), None);
-        assert_eq!(string_to_long(&c_long::MIN.to_string()), None);
+        assert_eq!(string_to_long(&i64::MAX.to_string()), None);
+        assert_eq!(string_to_long(&i64::MIN.to_string()), None);
+    }
+
+    /// The accepted range is the one the parameters are declared with, not the
+    /// target's `long`. On wasm32 that is 32 bits, and a config file has to
+    /// mean the same thing wherever it is read.
+    #[test]
+    fn string_to_long_accepts_values_wider_than_a_32_bit_long() {
+        assert_eq!(string_to_long("3000000000"), Some(3_000_000_000));
+        assert_eq!(string_to_long("-3000000000"), Some(-3_000_000_000));
     }
 
     #[test]
