@@ -10,6 +10,58 @@ using 100% idiomatic Rust, with proper documentation, and an easy-to-use API.
 
 The emphasis is first on **correctness**, then performance. With that in mind, we have end to end tests comparing both implementations in `tests/`.
 
+## Library API
+
+The unwrapper is one function of data and parameters. `run_snaphu` allocates
+its outputs; `run_snaphu_inplace` is the same computation writing into buffers
+you own, for callers who want to control or reuse those allocations.
+
+```rust
+use snaphu_rs::data::raster::Raster;
+use snaphu_rs::{CostMode, RunConfig, UnwrapInputs, arc_count, run_snaphu, run_snaphu_inplace};
+
+let wrapped = Raster::new(width, height, my_phase);          // row-major f32
+let config = RunConfig { cost_mode: CostMode::Smooth, ..RunConfig::default() };
+
+// Allocating form.
+let out = run_snaphu(&UnwrapInputs::new(&wrapped), &config)?;
+let unwrapped: &[f32] = out.unwrapped_phase.as_slice();
+
+// Caller-owned buffers, reusable across scenes.
+let mut phase = vec![0.0f32; width * height];
+let mut flows = vec![0i16; arc_count(height, width)];
+let report = run_snaphu_inplace(
+    &UnwrapInputs::new(&wrapped),
+    &config,
+    &mut phase,
+    Some(&mut flows),
+    None,   // connected components
+    None,   // magnitude
+)?;
+```
+
+`UnwrapInputs` carries the data — wrapped phase plus optional magnitude, power,
+correlation, coarse estimate, arc weights, initial flows and masks — and
+borrows all of it. `RunConfig` carries the parameters. The CLI is a thin
+wrapper over the same call.
+
+## File formats
+
+Input and output rasters use the SNAPHU on-disk formats (`COMPLEX_DATA`,
+`FLOAT_DATA`, `ALT_LINE_DATA`, `ALT_SAMPLE_DATA`), plus one snaphu-rs
+extension: `FLOAT_DATA_PHASE_FORMAT`, a `.phase` file that stores its own row
+and column counts in a 64-byte header, so the line-length argument becomes
+optional.
+
+```bash
+snaphu -s -C "INFILEFORMAT FLOAT_DATA_PHASE_FORMAT" \
+          -C "OUTFILEFORMAT FLOAT_DATA_PHASE_FORMAT" \
+          -o unwrapped.phase wrapped.phase
+```
+
+See [docs/file-formats.md](docs/file-formats.md) for the byte layouts, the
+defaults, and Rust/Python snippets for reading and writing `.phase` files.
+
 ## Visualization (optional)
 
 The `rerun` feature enables [Rerun](https://rerun.io/)-based visualization tests and the `phase_viewer` example. It is disabled by default so that CI and regular builds stay lightweight.

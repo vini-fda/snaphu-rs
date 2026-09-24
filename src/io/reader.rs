@@ -5,18 +5,20 @@ use crate::data::ops::{
     extract_flow, flip_phase_array_sign, non_neg_data_array, valid_data_array, wrap_phase,
 };
 use crate::data::raster::Raster;
+use crate::io::phase_format::{read_phase_file, read_phase_header};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-pub fn read_phase_file(_path: &std::path::Path) {
-    // TODO: implement.
-}
-
 /// Determine the number of lines in an input raster based on file size.
 ///
 /// This is the idiomatic Rust equivalent of C `GetNLines()`.
+///
+/// The snaphu-rs [`InputFileFormat::FloatDataPhase`] extension is
+/// self-describing, so its line count comes from the `.phase` header rather
+/// than from the file size; `line_len` is then only checked for agreement with
+/// the header (pass `0` to accept whatever the header declares).
 pub fn get_n_lines(
     infile: &Path,
     line_len: usize,
@@ -24,6 +26,28 @@ pub fn get_n_lines(
     infile_format: InputFileFormat,
     unwrapped_infile_format: InputFileFormat,
 ) -> io::Result<usize> {
+    let effective_format = if unwrapped {
+        unwrapped_infile_format
+    } else {
+        infile_format
+    };
+
+    if matches!(effective_format, InputFileFormat::FloatDataPhase) {
+        let dims = read_phase_header(infile)?;
+        if line_len != 0 && line_len != dims.ncols {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "file {} declares {} samples per line, but {} was requested",
+                    infile.display(),
+                    dims.ncols,
+                    line_len
+                ),
+            ));
+        }
+        return Ok(dims.nrows);
+    }
+
     if line_len == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -32,16 +56,12 @@ pub fn get_n_lines(
     }
 
     let filesize = std::fs::metadata(infile)?.len() as usize;
-    let effective_format = if unwrapped {
-        unwrapped_infile_format
-    } else {
-        infile_format
-    };
     let datasize = match effective_format {
         InputFileFormat::FloatData => std::mem::size_of::<f32>(),
         InputFileFormat::ComplexData
         | InputFileFormat::AltLineData
         | InputFileFormat::AltSampleData => 2 * std::mem::size_of::<f32>(),
+        InputFileFormat::FloatDataPhase => unreachable!("handled above"),
     };
     let line_bytes = line_len
         .checked_mul(datasize)
@@ -116,6 +136,10 @@ pub fn read_input_file(
                 None,
                 read_2d_array::<f32>(&spec.infile, line_len, nlines, window)?,
             ),
+            InputFileFormat::FloatDataPhase => (
+                None,
+                read_phase_file(&spec.infile, line_len, nlines, window)?,
+            ),
         };
 
         if !valid_data_array(
@@ -180,6 +204,10 @@ pub fn read_input_file(
                 None,
                 read_2d_array::<f32>(&spec.infile, line_len, nlines, window)?,
             ),
+            RasterFileFormat::FloatDataPhase => (
+                None,
+                read_phase_file(&spec.infile, line_len, nlines, window)?,
+            ),
         };
 
         if !valid_data_array(
@@ -239,6 +267,10 @@ pub enum RasterFileFormat {
     FloatData,
     AltSampleData,
     AltLineData,
+    /// snaphu-rs extension: single-band floats behind a `.phase` header.
+    ///
+    /// See [`crate::io::phase_format`].
+    FloatDataPhase,
 }
 
 /// File encodings accepted by C `GetNLines()`.
@@ -248,6 +280,10 @@ pub enum InputFileFormat {
     FloatData,
     AltSampleData,
     AltLineData,
+    /// snaphu-rs extension: single-band floats behind a `.phase` header.
+    ///
+    /// See [`crate::io::phase_format`].
+    FloatDataPhase,
 }
 
 /// Supported file encodings for optional magnitude-file overrides.
@@ -260,6 +296,10 @@ pub enum MagnitudeFileFormat {
     ComplexData,
     AltSampleData,
     AltLineData,
+    /// snaphu-rs extension: single-band floats behind a `.phase` header.
+    ///
+    /// See [`crate::io::phase_format`].
+    FloatDataPhase,
 }
 
 /// Edge-mask thresholds used by `read_byte_mask` (`ReadByteMask` equivalent).
@@ -371,6 +411,21 @@ pub fn read_2d_array<T: NativeSample>(
     nlines: usize,
     window: TileWindow,
 ) -> io::Result<Raster<T>> {
+    read_2d_array_after_header(infile, line_len, nlines, window, 0)
+}
+
+/// Like [`read_2d_array`], but skipping a fixed-size header before the samples.
+///
+/// Used by container formats such as [`crate::io::phase_format`], whose sample
+/// block starts at a fixed offset. `header_bytes` is included in the expected
+/// file size.
+pub fn read_2d_array_after_header<T: NativeSample>(
+    infile: &Path,
+    line_len: usize,
+    nlines: usize,
+    window: TileWindow,
+    header_bytes: usize,
+) -> io::Result<Raster<T>> {
     if window.first_row > nlines
         || window.first_col > line_len
         || window.first_row + window.nrow > nlines
@@ -385,6 +440,7 @@ pub fn read_2d_array<T: NativeSample>(
     let expected_size = nlines
         .checked_mul(line_len)
         .and_then(|v| v.checked_mul(T::SIZE))
+        .and_then(|v| v.checked_add(header_bytes))
         .ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "expected file size overflow")
         })?;
@@ -405,6 +461,7 @@ pub fn read_2d_array<T: NativeSample>(
 
     let start_byte = (line_len * window.first_row + window.first_col)
         .checked_mul(T::SIZE)
+        .and_then(|v| v.checked_add(header_bytes))
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek offset overflow"))?;
     fp.seek(SeekFrom::Start(start_byte as u64))?;
 
@@ -421,6 +478,8 @@ pub fn read_2d_array<T: NativeSample>(
     for _ in 0..window.nrow {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
+            // `as_chunks::<T::SIZE>()` needs generic_const_exprs.
+            #[allow(clippy::chunks_exact_to_as_chunks)]
             for chunk in rowbuf.chunks_exact(T::SIZE) {
                 data.push(T::from_ne_bytes(chunk));
             }
@@ -507,9 +566,8 @@ pub fn read_alt_line_file(
     for _ in 0..window.nrow {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
-            for chunk in rowbuf.chunks_exact(std::mem::size_of::<f32>()) {
-                let arr: [u8; 4] = chunk.try_into().expect("invalid f32 row chunk");
-                mag_data.push(f32::from_ne_bytes(arr));
+            for chunk in rowbuf.as_chunks::<4>().0 {
+                mag_data.push(f32::from_ne_bytes(*chunk));
             }
         }
 
@@ -519,9 +577,8 @@ pub fn read_alt_line_file(
 
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
-            for chunk in rowbuf.chunks_exact(std::mem::size_of::<f32>()) {
-                let arr: [u8; 4] = chunk.try_into().expect("invalid f32 row chunk");
-                phase_data.push(f32::from_ne_bytes(arr));
+            for chunk in rowbuf.as_chunks::<4>().0 {
+                phase_data.push(f32::from_ne_bytes(*chunk));
             }
         }
 
@@ -608,9 +665,8 @@ pub fn read_alt_line_file_phase(
     for _ in 0..window.nrow {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
-            for chunk in rowbuf.chunks_exact(std::mem::size_of::<f32>()) {
-                let arr: [u8; 4] = chunk.try_into().expect("invalid f32 row chunk");
-                phase_data.push(f32::from_ne_bytes(arr));
+            for chunk in rowbuf.as_chunks::<4>().0 {
+                phase_data.push(f32::from_ne_bytes(*chunk));
             }
         }
 
@@ -719,7 +775,7 @@ pub fn read_alt_samp_file(
     for _ in 0..window.nrow {
         if interleaved_row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
-            for pair in rowbuf.chunks_exact(2 * std::mem::size_of::<f32>()) {
+            for pair in rowbuf.as_chunks::<8>().0 {
                 let a: [u8; 4] = pair[0..4].try_into().expect("invalid f32 sample chunk");
                 let b: [u8; 4] = pair[4..8].try_into().expect("invalid f32 sample chunk");
                 arr1_data.push(f32::from_ne_bytes(a));
@@ -809,7 +865,7 @@ pub fn read_complex_file(
     for _ in 0..window.nrow {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
-            for pair in rowbuf.chunks_exact(2 * std::mem::size_of::<f32>()) {
+            for pair in rowbuf.as_chunks::<8>().0 {
                 let re = f32::from_ne_bytes(pair[0..4].try_into().expect("invalid complex sample"));
                 let im = f32::from_ne_bytes(pair[4..8].try_into().expect("invalid complex sample"));
 
@@ -873,6 +929,7 @@ pub fn read_magnitude(
             let (m, _other) = read_alt_samp_file(path, line_len, nlines, window)?;
             m
         }
+        MagnitudeFileFormat::FloatDataPhase => read_phase_file(path, line_len, nlines, window)?,
     };
 
     *mag = loaded_mag;
@@ -943,6 +1000,7 @@ pub fn read_unwrapped_estimate_file(
             let (_dummy, est) = read_alt_samp_file(estfile, line_len, nlines, window)?;
             est
         }
+        RasterFileFormat::FloatDataPhase => read_phase_file(estfile, line_len, nlines, window)?,
     };
 
     if !valid_data_array(&estimate.data, estimate.height, estimate.width) {
@@ -977,23 +1035,32 @@ pub fn read_intensity(
     let mut pwr2: Option<Raster<f32>> = None;
 
     if let Some(ampfile2) = &files.ampfile2 {
-        if files.ampfile_format != RasterFileFormat::FloatData {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "illegal file formats specified for '{}' and '{}'",
-                    files.ampfile.display(),
-                    ampfile2.display()
-                ),
-            ));
+        // Two-file input requires a single-band format, one band per file.
+        match files.ampfile_format {
+            RasterFileFormat::FloatData => {
+                pwr1 = Some(read_2d_array::<f32>(
+                    &files.ampfile,
+                    line_len,
+                    nlines,
+                    window,
+                )?);
+                pwr2 = Some(read_2d_array::<f32>(ampfile2, line_len, nlines, window)?);
+            }
+            RasterFileFormat::FloatDataPhase => {
+                pwr1 = Some(read_phase_file(&files.ampfile, line_len, nlines, window)?);
+                pwr2 = Some(read_phase_file(ampfile2, line_len, nlines, window)?);
+            }
+            RasterFileFormat::AltLineData | RasterFileFormat::AltSampleData => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "illegal file formats specified for '{}' and '{}'",
+                        files.ampfile.display(),
+                        ampfile2.display()
+                    ),
+                ));
+            }
         }
-        pwr1 = Some(read_2d_array::<f32>(
-            &files.ampfile,
-            line_len,
-            nlines,
-            window,
-        )?);
-        pwr2 = Some(read_2d_array::<f32>(ampfile2, line_len, nlines, window)?);
     } else {
         match files.ampfile_format {
             RasterFileFormat::AltSampleData => {
@@ -1013,6 +1080,9 @@ pub fn read_intensity(
                     nlines,
                     window,
                 )?);
+            }
+            RasterFileFormat::FloatDataPhase => {
+                pwr = Some(read_phase_file(&files.ampfile, line_len, nlines, window)?);
             }
         }
     }
@@ -1086,6 +1156,9 @@ pub fn read_correlation(
         }
         RasterFileFormat::FloatData => {
             read_2d_array::<f32>(&file.corrfile, line_len, nlines, window)
+        }
+        RasterFileFormat::FloatDataPhase => {
+            read_phase_file(&file.corrfile, line_len, nlines, window)
         }
     }
 }
@@ -1182,6 +1255,8 @@ pub fn read_2d_row_col_file<T: NativeSample>(
     for _ in 0..row_arc_rows {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
+            // `as_chunks::<T::SIZE>()` needs generic_const_exprs.
+            #[allow(clippy::chunks_exact_to_as_chunks)]
             for chunk in rowbuf.chunks_exact(T::SIZE) {
                 row_data.push(T::from_ne_bytes(chunk));
             }
@@ -1211,6 +1286,8 @@ pub fn read_2d_row_col_file<T: NativeSample>(
     for _ in 0..col_arc_rows {
         if col_bytes > 0 {
             fp.read_exact(&mut colbuf)?;
+            // `as_chunks::<T::SIZE>()` needs generic_const_exprs.
+            #[allow(clippy::chunks_exact_to_as_chunks)]
             for chunk in colbuf.chunks_exact(T::SIZE) {
                 col_data.push(T::from_ne_bytes(chunk));
             }
@@ -1300,6 +1377,8 @@ pub fn read_2d_row_col_file_rows<T: NativeSample>(
     for _ in 0..window.nrow {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
+            // `as_chunks::<T::SIZE>()` needs generic_const_exprs.
+            #[allow(clippy::chunks_exact_to_as_chunks)]
             for chunk in rowbuf.chunks_exact(T::SIZE) {
                 row_data.push(T::from_ne_bytes(chunk));
             }
@@ -1440,6 +1519,92 @@ mod tests {
 
     fn temp_file(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("{}_{}", name, unique_suffix()))
+    }
+
+    fn write_phase_fixture(path: &std::path::Path, nrows: u32, ncols: u32) {
+        let mut header = [0u8; crate::io::phase_format::PHASE_HEADER_LEN];
+        header[0..4].copy_from_slice(&nrows.to_ne_bytes());
+        header[4..8].copy_from_slice(&ncols.to_ne_bytes());
+        let mut fp = File::create(path).unwrap();
+        fp.write_all(&header).unwrap();
+        for value in 0..(nrows * ncols) {
+            fp.write_all(&(value as f32).to_ne_bytes()).unwrap();
+        }
+    }
+
+    #[test]
+    fn get_n_lines_takes_phase_format_dimensions_from_the_header() {
+        let path = temp_file("snaphu_rs_getnlines_phase");
+        write_phase_fixture(&path, 3, 4);
+
+        // Width omitted: accept whatever the header declares.
+        let nlines = get_n_lines(
+            &path,
+            0,
+            false,
+            InputFileFormat::FloatDataPhase,
+            InputFileFormat::AltLineData,
+        )
+        .unwrap();
+        assert_eq!(nlines, 3);
+
+        // Width supplied and matching.
+        assert_eq!(
+            get_n_lines(
+                &path,
+                4,
+                false,
+                InputFileFormat::FloatDataPhase,
+                InputFileFormat::AltLineData,
+            )
+            .unwrap(),
+            3
+        );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn get_n_lines_rejects_width_that_disagrees_with_phase_header() {
+        let path = temp_file("snaphu_rs_getnlines_phase_bad");
+        write_phase_fixture(&path, 3, 4);
+
+        let err = get_n_lines(
+            &path,
+            5,
+            false,
+            InputFileFormat::FloatDataPhase,
+            InputFileFormat::AltLineData,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("samples per line"));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_input_file_reads_wrapped_phase_from_phase_format() {
+        let path = temp_file("snaphu_rs_readinput_phase");
+        write_phase_fixture(&path, 2, 2);
+
+        let spec = InputReadSpec {
+            infile: path.clone(),
+            unwrapped: false,
+            infile_format: InputFileFormat::FloatDataPhase,
+            unwrapped_infile_format: RasterFileFormat::FloatData,
+            flip_phase_sign: false,
+        };
+        let out = read_input_file(&spec, 2, 2, TileWindow::new(0, 0, 2, 2)).unwrap();
+        // Magnitude is unavailable in a single-band format, so it defaults to 1.
+        assert_eq!(out.mag.data, vec![1.0f32; 4]);
+        // Samples 0..3 wrapped into (-pi, pi].
+        assert_eq!(out.wrapped_phase.data.len(), 4);
+        assert!((out.wrapped_phase.data[0] - 0.0).abs() < 1.0e-6);
+        assert!((out.wrapped_phase.data[1] - 1.0).abs() < 1.0e-6);
+        assert!(out.wrapped_phase.data.iter().all(|v| v.abs() <= TWO_PI_F32));
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

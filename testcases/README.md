@@ -51,3 +51,10 @@ After running, each testcase directory should include:
 - `UnwPhase_ifg_IW2_VV_08Apr2016_20Apr2016.snaphu.img`
 - `UnwPhase_ifg_IW2_VV_08Apr2016_20Apr2016.snaphu.hdr`
 - `snaphu.log`
+
+## `.phase` example
+
+`phase_format/original_phase_example.phase` is a small 8x8 raster of unwrapped
+phase in the snaphu-rs `.phase` format (`FLOAT_DATA_PHASE_FORMAT`), used by
+`tests/phase_format.rs`. The format is documented in
+[../docs/file-formats.md](../docs/file-formats.md).
