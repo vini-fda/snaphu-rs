@@ -2169,6 +2169,7 @@ pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCos
     let narcs = (params.nrow - 1) * params.ncol + params.nrow * (params.ncol - 1);
     const ARC_UBOUND: i64 = 200;
     let mut solver = McmfCs2::new(ground_id, 2 * narcs);
+    let solver_err = |err| NetworkCostError::SolverFailure(format!("{err:?}"));
 
     let node_id = |row: usize, col: usize| -> usize { col * residue_rows + row + 1 };
 
@@ -2177,10 +2178,14 @@ pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCos
         for row in 0..residue_rows {
             let supply = i64::from(params.residue[row][col]);
             ground_supply -= supply;
-            solver.set_supply_demand_of_node(node_id(row, col), supply);
+            solver
+                .set_supply_demand_of_node(node_id(row, col), supply)
+                .map_err(solver_err)?;
         }
     }
-    solver.set_supply_demand_of_node(ground_id, ground_supply);
+    solver
+        .set_supply_demand_of_node(ground_id, ground_supply)
+        .map_err(solver_err)?;
 
     let mut arc_pairs_ground = 0usize;
     let mut arc_pairs_row_internal = 0usize;
@@ -2244,7 +2249,9 @@ pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCos
         let mut tail = tail0;
         let mut head = head0;
         for _ in 0..2 {
-            solver.set_arc(tail, head, 0, ARC_UBOUND, cost);
+            solver
+                .set_arc(tail, head, 0, ARC_UBOUND, cost)
+                .map_err(solver_err)?;
             std::mem::swap(&mut tail, &mut head);
         }
     }
@@ -2263,9 +2270,7 @@ pub fn solve_cs2(params: SolveCs2Params<'_>) -> Result<Vec<Vec<i16>>, NetworkCos
 
     // Upstream moved the solver flags (check_solution, comp_duals) to builder
     // setters; both still default to false.
-    let solution = solver
-        .min_cost()
-        .map_err(|err| NetworkCostError::SolverFailure(format!("{err:?}")))?;
+    let solution = solver.min_cost().map_err(solver_err)?;
 
     let widths = flow_row_lengths(params.nrow, params.ncol);
     let mut flows: Vec<Vec<i16>> = widths.iter().map(|&w| vec![0i16; w]).collect();
