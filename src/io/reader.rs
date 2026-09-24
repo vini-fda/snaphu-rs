@@ -478,6 +478,8 @@ pub fn read_2d_array_after_header<T: NativeSample>(
     for _ in 0..window.nrow {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
+            // `as_chunks::<T::SIZE>()` needs generic_const_exprs.
+            #[allow(clippy::chunks_exact_to_as_chunks)]
             for chunk in rowbuf.chunks_exact(T::SIZE) {
                 data.push(T::from_ne_bytes(chunk));
             }
@@ -564,9 +566,8 @@ pub fn read_alt_line_file(
     for _ in 0..window.nrow {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
-            for chunk in rowbuf.chunks_exact(std::mem::size_of::<f32>()) {
-                let arr: [u8; 4] = chunk.try_into().expect("invalid f32 row chunk");
-                mag_data.push(f32::from_ne_bytes(arr));
+            for chunk in rowbuf.as_chunks::<4>().0 {
+                mag_data.push(f32::from_ne_bytes(*chunk));
             }
         }
 
@@ -576,9 +577,8 @@ pub fn read_alt_line_file(
 
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
-            for chunk in rowbuf.chunks_exact(std::mem::size_of::<f32>()) {
-                let arr: [u8; 4] = chunk.try_into().expect("invalid f32 row chunk");
-                phase_data.push(f32::from_ne_bytes(arr));
+            for chunk in rowbuf.as_chunks::<4>().0 {
+                phase_data.push(f32::from_ne_bytes(*chunk));
             }
         }
 
@@ -665,9 +665,8 @@ pub fn read_alt_line_file_phase(
     for _ in 0..window.nrow {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
-            for chunk in rowbuf.chunks_exact(std::mem::size_of::<f32>()) {
-                let arr: [u8; 4] = chunk.try_into().expect("invalid f32 row chunk");
-                phase_data.push(f32::from_ne_bytes(arr));
+            for chunk in rowbuf.as_chunks::<4>().0 {
+                phase_data.push(f32::from_ne_bytes(*chunk));
             }
         }
 
@@ -776,7 +775,7 @@ pub fn read_alt_samp_file(
     for _ in 0..window.nrow {
         if interleaved_row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
-            for pair in rowbuf.chunks_exact(2 * std::mem::size_of::<f32>()) {
+            for pair in rowbuf.as_chunks::<8>().0 {
                 let a: [u8; 4] = pair[0..4].try_into().expect("invalid f32 sample chunk");
                 let b: [u8; 4] = pair[4..8].try_into().expect("invalid f32 sample chunk");
                 arr1_data.push(f32::from_ne_bytes(a));
@@ -866,7 +865,7 @@ pub fn read_complex_file(
     for _ in 0..window.nrow {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
-            for pair in rowbuf.chunks_exact(2 * std::mem::size_of::<f32>()) {
+            for pair in rowbuf.as_chunks::<8>().0 {
                 let re = f32::from_ne_bytes(pair[0..4].try_into().expect("invalid complex sample"));
                 let im = f32::from_ne_bytes(pair[4..8].try_into().expect("invalid complex sample"));
 
@@ -1256,6 +1255,8 @@ pub fn read_2d_row_col_file<T: NativeSample>(
     for _ in 0..row_arc_rows {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
+            // `as_chunks::<T::SIZE>()` needs generic_const_exprs.
+            #[allow(clippy::chunks_exact_to_as_chunks)]
             for chunk in rowbuf.chunks_exact(T::SIZE) {
                 row_data.push(T::from_ne_bytes(chunk));
             }
@@ -1285,6 +1286,8 @@ pub fn read_2d_row_col_file<T: NativeSample>(
     for _ in 0..col_arc_rows {
         if col_bytes > 0 {
             fp.read_exact(&mut colbuf)?;
+            // `as_chunks::<T::SIZE>()` needs generic_const_exprs.
+            #[allow(clippy::chunks_exact_to_as_chunks)]
             for chunk in colbuf.chunks_exact(T::SIZE) {
                 col_data.push(T::from_ne_bytes(chunk));
             }
@@ -1374,6 +1377,8 @@ pub fn read_2d_row_col_file_rows<T: NativeSample>(
     for _ in 0..window.nrow {
         if row_bytes > 0 {
             fp.read_exact(&mut rowbuf)?;
+            // `as_chunks::<T::SIZE>()` needs generic_const_exprs.
+            #[allow(clippy::chunks_exact_to_as_chunks)]
             for chunk in rowbuf.chunks_exact(T::SIZE) {
                 row_data.push(T::from_ne_bytes(chunk));
             }

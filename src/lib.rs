@@ -477,16 +477,16 @@ options:
         .map_err(|err| io::Error::other(format!("native unwrap failed: {err}")))?;
     let unwrapped = out.unwrapped_phase;
 
-    if let Some(flows) = &out.flows {
-        if !outfiles.flowfile.is_empty() {
-            let (row_arcs, col_arcs) = flat_arcs_to_rasters(flows, window.nrow, window.ncol)?;
-            let real = write_2d_row_col_array(&row_arcs, &col_arcs, Path::new(&outfiles.flowfile))?;
-            log::debug!(
-                "native Rust wrote FLOWFILE {} (requested {})",
-                real.display(),
-                outfiles.flowfile
-            );
-        }
+    if let Some(flows) = &out.flows
+        && !outfiles.flowfile.is_empty()
+    {
+        let (row_arcs, col_arcs) = flat_arcs_to_rasters(flows, window.nrow, window.ncol)?;
+        let real = write_2d_row_col_array(&row_arcs, &col_arcs, Path::new(&outfiles.flowfile))?;
+        log::debug!(
+            "native Rust wrote FLOWFILE {} (requested {})",
+            real.display(),
+            outfiles.flowfile
+        );
     }
 
     if let Some(diagnostics) = &out.diagnostics {
